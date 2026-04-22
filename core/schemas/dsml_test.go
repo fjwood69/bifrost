@@ -1,12 +1,10 @@
-package openai
+package schemas
 
 import (
 	"testing"
-
-	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func TestStripDSMLFromStreamDeltaWithBuffer(t *testing.T) {
+func TestStripDeepSeekMarkersWithState(t *testing.T) {
 	tests := []struct {
 		name           string
 		deltas         []string
@@ -50,13 +48,35 @@ func TestStripDSMLFromStreamDeltaWithBuffer(t *testing.T) {
 			buffer := ""
 			suppressed := false
 			for i, content := range tt.deltas {
-				result := schemas.StripDeepSeekMarkersWithState(content, &buffer, &suppressed)
+				result := StripDeepSeekMarkersWithState(content, &buffer, &suppressed)
 				if suppressed != tt.expectedSupp[i] {
 					t.Errorf("delta %d: expected suppressed %v, got %v", i, tt.expectedSupp[i], suppressed)
 				}
 				if result != tt.expectedResult[i] {
 					t.Errorf("delta %d: expected result %q, got %q", i, tt.expectedResult[i], result)
 				}
+			}
+		})
+	}
+}
+
+func TestStripDeepSeekMarkers(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"hello world", "hello world"},
+		{"<｜DSML｜function_calls>{}", ""},
+		{"some text <｜DSML｜", "some text "},
+		{"<｜function_call>call()<｜DSML｜", ""},
+		{"Multiple markers <｜function_call> one <｜function_call> two", "Multiple markers "},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := StripDeepSeekMarkers(tt.input)
+			if result != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, result)
 			}
 		})
 	}

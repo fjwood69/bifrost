@@ -875,11 +875,22 @@ func HandleOpenAIChatCompletionRequest(
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, sendBackRawRequest, sendBackRawResponse)
 	}
 
-	// Strip any DeepSeek DSML tool call markers from response content.
-	// Proper tool calls are in the ToolCalls array; DSML in content is noise.
-	for i := range response.Choices {
-		stripDSMLFromChatResponse(&response.Choices[i])
-	}
+		// Strip any DeepSeek DSML tool call markers from response content.
+		// Proper tool calls are in the ToolCalls array; DSML in content is noise.
+		for i := range response.Choices {
+			choice := &response.Choices[i]
+			if choice.ChatNonStreamResponseChoice != nil &&
+				choice.ChatNonStreamResponseChoice.Message != nil &&
+				choice.ChatNonStreamResponseChoice.Message.Content != nil &&
+				choice.ChatNonStreamResponseChoice.Message.Content.ContentStr != nil {
+				stripped := schemas.StripDeepSeekMarkers(*choice.ChatNonStreamResponseChoice.Message.Content.ContentStr)
+				if stripped == "" {
+					choice.ChatNonStreamResponseChoice.Message.Content.ContentStr = nil
+				} else {
+					choice.ChatNonStreamResponseChoice.Message.Content.ContentStr = &stripped
+				}
+			}
+		}
 
 	response.ExtraFields.Latency = latency.Milliseconds()
 
@@ -1208,6 +1219,21 @@ func HandleOpenAIChatCompletionStreaming(
 						return
 					}
 
+					// Strip any DeepSeek DSML tool call markers from streaming content.
+					// dsmlTextSuppressed stays true for the rest of the stream once DSML is
+					// detected — the XML spans many small deltas, not just the one with the marker.
+					if response.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && response.Delta != nil {
+						if !dsmlTextSuppressed {
+							text := schemas.StripDeepSeekMarkersWithState(*response.Delta, &dsmlBuffer, &dsmlTextSuppressed)
+							if dsmlTextSuppressed || (text == "" && *response.Delta != "") {
+								continue
+							}
+							response.Delta = &text
+						} else {
+							continue
+						}
+					}
+
 					response.ExtraFields.ChunkIndex = response.SequenceNumber
 
 					if sendBackRawResponse {
@@ -1297,12 +1323,15 @@ func HandleOpenAIChatCompletionStreaming(
 				// Proper tool calls arrive in Delta.ToolCalls; DSML in Content is noise.
 				// dsmlTextSuppressed stays true for the rest of the stream once DSML is
 				// detected — the XML spans many small deltas, not just the one with the marker.
-				if choice.ChatStreamResponseChoice != nil {
+				if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil && choice.ChatStreamResponseChoice.Delta.Content != nil {
 					if !dsmlTextSuppressed {
-						if stripDSMLFromStreamDeltaWithBuffer(choice.ChatStreamResponseChoice.Delta, &dsmlBuffer) {
-							dsmlTextSuppressed = true
+						text := schemas.StripDeepSeekMarkersWithState(*choice.ChatStreamResponseChoice.Delta.Content, &dsmlBuffer, &dsmlTextSuppressed)
+						if dsmlTextSuppressed {
+							choice.ChatStreamResponseChoice.Delta.Content = nil
+						} else {
+							choice.ChatStreamResponseChoice.Delta.Content = &text
 						}
-					} else if choice.ChatStreamResponseChoice.Delta != nil {
+					} else {
 						choice.ChatStreamResponseChoice.Delta.Content = nil
 					}
 				}
@@ -1714,6 +1743,8 @@ func HandleOpenAIResponsesStreaming(
 
 		startTime := time.Now()
 		lastChunkTime := startTime
+		dsmlTextSuppressed := false
+		dsmlBuffer := ""
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -1813,6 +1844,18 @@ func HandleOpenAIResponsesStreaming(
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse), responseChan, logger, postHookSpanFinalizer)
 					return
+				}
+
+				if response.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && response.Delta != nil {
+					if !dsmlTextSuppressed {
+						text := schemas.StripDeepSeekMarkersWithState(*response.Delta, &dsmlBuffer, &dsmlTextSuppressed)
+						if dsmlTextSuppressed || (text == "" && *response.Delta != "") {
+							continue
+						}
+						response.Delta = &text
+					} else {
+						continue
+					}
 				}
 
 				response.ExtraFields.ChunkIndex = response.SequenceNumber

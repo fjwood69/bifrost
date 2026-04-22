@@ -1397,23 +1397,54 @@ func SameBaseModel(a, b string) bool {
 	return BaseModelName(a) == BaseModelName(b)
 }
 
+// DSML markers used by DeepSeek for tool calls.
+const (
+	DSMLMarker                  = "<｜DSML｜"
+	DSMLMarkerFunctionCalls     = "<｜DSML｜function_calls"
+	DSMLMarkerFunctionCallStart = "<｜function_call>"
+	DSMLMarkerFunctionCallEnd   = "</｜function_call>"
+)
+
 // StripDeepSeekMarkers removes DeepSeek DSML tool call markers from a string.
 // These markers (e.g. <｜DSML｜function_calls ...>) can leak into text content
 // when DeepSeek is routed via OpenAI-compatible providers like Parasail.
+// Truncates at the first <｜ occurrence so content inside markers is also removed.
 func StripDeepSeekMarkers(s string) string {
-	if !strings.Contains(s, "<｜") {
+	idx := strings.Index(s, "<｜")
+	if idx < 0 {
 		return s
 	}
-	// Aggressively strip known markers and any partial DSML tokens
-	s = strings.ReplaceAll(s, "<｜DSML｜function_calls", "")
-	s = strings.ReplaceAll(s, "<｜function_call>", "")
-	s = strings.ReplaceAll(s, "</｜function_call>", "")
-	s = strings.ReplaceAll(s, "<｜DSML｜", "")
-	
-	// Strip anything starting with the DSML prefix to the end of the string
-	// (handles partial tokens in streaming)
-	re := regexp.MustCompile(`<｜.*?$`)
-	s = re.ReplaceAllString(s, "")
-	
-	return s
+	return s[:idx]
+}
+
+// StripDeepSeekMarkersWithState strips DSML markers from a string using a buffer for partial markers
+// across SSE chunks and a suppression flag for subsequent content deltas.
+func StripDeepSeekMarkersWithState(s string, buffer *string, suppressed *bool) string {
+	if *suppressed {
+		return ""
+	}
+
+	// Append current content to buffer
+	full := *buffer + s
+
+	if strings.Contains(full, DSMLMarker) ||
+		strings.Contains(full, DSMLMarkerFunctionCallStart) ||
+		strings.Contains(full, DSMLMarkerFunctionCallEnd) {
+		*suppressed = true
+		*buffer = "" // Clear buffer once detected
+		return ""
+	}
+
+	// Keep only the last 20 bytes to catch split markers in the next delta.
+	// The marker "<｜DSML｜" is 11 bytes in UTF-8.
+	const maxBufferLen = 20
+	if len(full) > maxBufferLen {
+		*buffer = full[len(full)-maxBufferLen:]
+	} else {
+		*buffer = full
+	}
+
+	// For the initial delta that contains the start of a marker but not the whole thing yet,
+	// we use StripDeepSeekMarkers which handles trailing partial tokens.
+	return StripDeepSeekMarkers(s)
 }

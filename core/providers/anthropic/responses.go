@@ -88,6 +88,11 @@ type anthropicToResponsesStreamState struct {
 	// (content_block_delta, content_block_stop) for these indices must also be suppressed
 	// to prevent "Content block not found" errors in the client SDK.
 	skippedOutputIndices map[int]bool
+	// dsmlTextSuppressed tracks whether DeepSeek DSML tool call markers have been detected,
+	// allowing subsequent text deltas to be suppressed for the rest of the stream.
+	dsmlTextSuppressed bool
+	// dsmlBuffer is a rolling buffer used to catch DSML markers split across SSE chunks.
+	dsmlBuffer string
 }
 
 type anthropicToResponsesStreamStateKeyType struct{}
@@ -1743,17 +1748,18 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 			// Fallback to ContentIndex if OutputIndex not available
 			streamResp.Index = bifrostResp.ContentIndex
 		}
-		if bifrostResp.Delta != nil {
-			// Strip DeepSeek DSML markers that leak into text content deltas
-			text := schemas.StripDeepSeekMarkers(*bifrostResp.Delta)
-			if text == "" && *bifrostResp.Delta != "" {
-				return nil
+			if bifrostResp.Delta != nil {
+				streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+				// Strip DeepSeek DSML markers that leak into text content deltas
+				text := schemas.StripDeepSeekMarkersWithState(*bifrostResp.Delta, &streamState.dsmlBuffer, &streamState.dsmlTextSuppressed)
+				if streamState.dsmlTextSuppressed || (text == "" && *bifrostResp.Delta != "") {
+					return nil
+				}
+				streamResp.Delta = &AnthropicStreamDelta{
+					Type: AnthropicStreamDeltaTypeText,
+					Text: &text,
+				}
 			}
-			streamResp.Delta = &AnthropicStreamDelta{
-				Type: AnthropicStreamDeltaTypeText,
-				Text: &text,
-			}
-		}
 
 	case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
 		// Skip WebSearch tool argument deltas - they will be sent synthetically in output_item.done
