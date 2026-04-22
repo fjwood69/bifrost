@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { getErrorMessage, useRecalculateLogCostsMutation } from "@/lib/store";
 import type { LogFilters as LogFiltersType } from "@/lib/types/logs";
-import { Calculator, MoreVertical, Pause, Play, Search } from "lucide-react";
+import { Calculator, MoreVertical, Radio, RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -46,10 +46,11 @@ function getRangeForPeriod(period: string): { from: Date; to: Date } {
 interface LogsHeaderViewProps {
 	filters: LogFiltersType;
 	onFiltersChange: (filters: LogFiltersType) => void;
-	liveEnabled: boolean;
-	onLiveToggle: (enabled: boolean) => void;
 	fetchLogs: () => Promise<void>;
 	fetchStats: () => Promise<void>;
+	loading?: boolean;
+	polling: boolean;
+	onPollToggle: (enabled: boolean) => void;
 	/** Column config for the ColumnConfigDropdown */
 	columnEntries: ColumnConfigEntry[];
 	columnLabels: Record<string, string>;
@@ -60,10 +61,11 @@ interface LogsHeaderViewProps {
 export function LogsHeaderView({
 	filters,
 	onFiltersChange,
-	liveEnabled,
-	onLiveToggle,
 	fetchLogs,
 	fetchStats,
+	loading = false,
+	polling,
+	onPollToggle,
 	columnEntries,
 	columnLabels,
 	onToggleColumnVisibility,
@@ -135,18 +137,13 @@ export function LogsHeaderView({
 
 	return (
 		<div className="flex grow items-center justify-between space-x-2">
-			<Button variant={"outline"} size="sm" className="h-7.5" onClick={() => onLiveToggle(!liveEnabled)}>
-				{liveEnabled ? (
-					<>
-						<Pause className="h-4 w-4" />
-						Live updates
-					</>
-				) : (
-					<>
-						<Play className="h-4 w-4" />
-						Live updates
-					</>
-				)}
+			<Button variant="outline" size="sm" className="h-7.5" onClick={() => fetchLogs()} disabled={loading}>
+				<RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+				Refresh
+			</Button>
+			<Button variant={polling ? "default" : "outline"} size="sm" className="h-7.5" onClick={() => onPollToggle(!polling)}>
+				{polling ? <Radio className="h-4 w-4 animate-pulse" /> : <Radio className="h-4 w-4" />}
+				Live
 			</Button>
 			<div className="border-input flex h-7.5 flex-1 items-center gap-2 rounded-sm border">
 				<Search className="mr-0.5 ml-2 size-4" />
