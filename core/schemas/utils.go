@@ -1396,3 +1396,17 @@ func SameBaseModel(a, b string) bool {
 	// Compare normalized base names.
 	return BaseModelName(a) == BaseModelName(b)
 }
+
+// StripDeepSeekMarkers removes DeepSeek DSML tool call markers from a string.
+// These markers (e.g. <｜DSML｜function_calls ...>) can leak into text content
+// when DeepSeek is routed via OpenAI-compatible providers like Parasail.
+func StripDeepSeekMarkers(s string) string {
+	if !strings.Contains(s, "<｜") {
+		return s
+	}
+	// If the entire string is a marker, return empty
+	if strings.Contains(s, "<｜DSML｜") || strings.Contains(s, "<｜function_call") {
+		return ""
+	}
+	return s
+}

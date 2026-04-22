@@ -1744,9 +1744,14 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 			streamResp.Index = bifrostResp.ContentIndex
 		}
 		if bifrostResp.Delta != nil {
+			// Strip DeepSeek DSML markers that leak into text content deltas
+			text := schemas.StripDeepSeekMarkers(*bifrostResp.Delta)
+			if text == "" && *bifrostResp.Delta != "" {
+				return nil
+			}
 			streamResp.Delta = &AnthropicStreamDelta{
 				Type: AnthropicStreamDeltaTypeText,
-				Text: bifrostResp.Delta,
+				Text: &text,
 			}
 		}
 
@@ -4200,9 +4205,11 @@ func convertBifrostMessageToAnthropicMessage(msg *schemas.ResponsesMessage, pend
 		// Add content blocks after pending reasoning content blocks are added
 		if msg.Content != nil {
 			if msg.Content.ContentStr != nil {
+				// Strip DeepSeek DSML markers that leak into text content
+				text := schemas.StripDeepSeekMarkers(*msg.Content.ContentStr)
 				contentBlocks = append(contentBlocks, AnthropicContentBlock{
 					Type: AnthropicContentBlockTypeText,
-					Text: msg.Content.ContentStr,
+					Text: &text,
 				})
 			} else if msg.Content.ContentBlocks != nil {
 				contentBlocks = append(contentBlocks, convertBifrostContentBlocksToAnthropic(msg.Content.ContentBlocks)...)
@@ -5229,9 +5236,11 @@ func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) 
 	case schemas.ResponsesInputMessageContentBlockTypeText, schemas.ResponsesOutputMessageContentTypeText:
 		anthropicBlock := AnthropicContentBlock{}
 		if block.Text != nil {
+			// Strip DeepSeek DSML markers that leak into text content
+			text := schemas.StripDeepSeekMarkers(*block.Text)
 			anthropicBlock = AnthropicContentBlock{
 				Type:         AnthropicContentBlockTypeText,
-				Text:         block.Text,
+				Text:         &text,
 				CacheControl: block.CacheControl,
 			}
 			if block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0 {
