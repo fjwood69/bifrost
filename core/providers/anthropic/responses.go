@@ -2072,7 +2072,17 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 					StopSequence: nil,
 				}
 			}
-		}
+		} else {
+				// Ensure usage block exists with zero values to avoid client-side undefined errors
+				anthropicContentDeltaEvent.Usage = &AnthropicUsage{
+					InputTokens:  0,
+					OutputTokens: 0,
+					CacheCreation: AnthropicUsageCacheCreation{
+						Ephemeral5mInputTokens: 0,
+						Ephemeral1hInputTokens: 0,
+					},
+				}
+			}
 		return []*AnthropicStreamEvent{anthropicContentDeltaEvent, streamResp}
 
 	case schemas.ResponsesStreamResponseTypeMCPCallArgumentsDelta:
@@ -2127,7 +2137,17 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 			// Convert usage from Bifrost format to Anthropic format using common converter
 			if bifrostResp.Response != nil {
 				streamResp.Usage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Response.Usage)
-			}
+			} else {
+					// Ensure usage block exists with zero values to avoid client-side undefined errors
+					streamResp.Usage = &AnthropicUsage{
+						InputTokens:  0,
+						OutputTokens: 0,
+						CacheCreation: AnthropicUsageCacheCreation{
+							Ephemeral5mInputTokens: 0,
+							Ephemeral1hInputTokens: 0,
+						},
+					}
+				}
 
 			// Convert stop reason from Bifrost format to Anthropic format
 			if bifrostResp.Response != nil && bifrostResp.Response.StopReason != nil {

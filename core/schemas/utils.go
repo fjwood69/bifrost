@@ -1404,9 +1404,16 @@ func StripDeepSeekMarkers(s string) string {
 	if !strings.Contains(s, "<｜") {
 		return s
 	}
-	// If the entire string is a marker, return empty
-	if strings.Contains(s, "<｜DSML｜") || strings.Contains(s, "<｜function_call") {
-		return ""
-	}
+	// Aggressively strip known markers and any partial DSML tokens
+	s = strings.ReplaceAll(s, "<｜DSML｜function_calls", "")
+	s = strings.ReplaceAll(s, "<｜function_call>", "")
+	s = strings.ReplaceAll(s, "</｜function_call>", "")
+	s = strings.ReplaceAll(s, "<｜DSML｜", "")
+	
+	// Strip anything starting with the DSML prefix to the end of the string
+	// (handles partial tokens in streaming)
+	re := regexp.MustCompile(`<｜.*?$`)
+	s = re.ReplaceAllString(s, "")
+	
 	return s
 }
