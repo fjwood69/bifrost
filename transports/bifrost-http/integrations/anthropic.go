@@ -428,6 +428,25 @@ func extractAnthropicListModelsParams(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 	return errors.New("invalid request type for Anthropic list models")
 }
 
+// stubCountTokensForNonAnthropic short-circuits count_tokens for non-Anthropic providers.
+// Parasail and other OpenAI-compatible providers do not implement this endpoint.
+// The Anthropic SDK uses the count for client-side estimation only; actual usage
+// comes from the completion response, so a zero stub is sufficient.
+// IMPORTANT: omit output_tokens/total_tokens -- those fields do not exist in the
+// real Anthropic count_tokens response and cause SDK-side nil-pointer panics.
+func stubCountTokensForNonAnthropic(ctx *fasthttp.RequestCtx, _ *schemas.BifrostContext, req interface{}) (bool, error) {
+	if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
+		provider, _ := schemas.ParseModelString(anthropicReq.Model, "")
+		if provider != schemas.Anthropic && provider != "" {
+			ctx.SetStatusCode(fasthttp.StatusOK)
+			ctx.SetContentType("application/json")
+			ctx.SetBodyString(`{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}`)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // CreateAnthropicCountTokensRouteConfigs creates route configurations for Anthropic count tokens endpoint.
 func CreateAnthropicCountTokensRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
 	return []RouteConfig{
@@ -457,7 +476,8 @@ func CreateAnthropicCountTokensRouteConfigs(pathPrefix string, handlerStore lib.
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return anthropic.ToAnthropicChatCompletionError(err)
 			},
-			PreCallback: checkAnthropicPassthrough,
+			PreCallback:  checkAnthropicPassthrough,
+			ShortCircuit: stubCountTokensForNonAnthropic,
 		},
 	}
 }

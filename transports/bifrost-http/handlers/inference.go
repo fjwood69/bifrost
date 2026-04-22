@@ -647,7 +647,6 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.POST("/v1/audio/transcriptions", lib.ChainMiddlewares(h.transcription, baseMiddlewares...))
 	r.POST("/v1/images/generations", lib.ChainMiddlewares(h.imageGeneration, baseMiddlewares...))
 	r.POST("/v1/responses/input_tokens", lib.ChainMiddlewares(h.countTokens, baseMiddlewares...))
-	r.POST("/v1/messages/count_tokens", lib.ChainMiddlewares(h.countTokensMessages, baseMiddlewares...))
 	r.POST("/v1/images/edits", lib.ChainMiddlewares(h.imageEdit, baseMiddlewares...))
 	r.POST("/v1/images/variations", lib.ChainMiddlewares(h.imageVariation, baseMiddlewares...))
 	r.POST("/v1/videos", lib.ChainMiddlewares(h.videoGeneration, baseMiddlewares...))
@@ -1546,19 +1545,6 @@ func (h *CompletionHandler) transcription(ctx *fasthttp.RequestCtx) {
 	}
 	// Send successful response
 	SendJSON(ctx, resp)
-}
-
-// countTokensMessages handles POST /v1/messages/count_tokens - Stub for Anthropic-compatible
-// clients (e.g. Claude Code) that preflight this endpoint before every session.
-// Parasail and other OpenAI-compatible providers do not implement the endpoint, so
-// we return a zero-count stub. The Anthropic SDK uses this for client-side estimation
-// only; actual token usage is returned in the completion response.
-// IMPORTANT: do not include output_tokens or total_tokens - those fields do not exist
-// in the real Anthropic count_tokens response and will cause SDK-side nil-pointer panics.
-func (h *CompletionHandler) countTokensMessages(ctx *fasthttp.RequestCtx) {
-	ctx.SetStatusCode(fasthttp.StatusOK)
-	ctx.SetContentType("application/json")
-	ctx.SetBodyString(`{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}`)
 }
 
 // countTokens handles POST /v1/responses/input_tokens - Process count tokens requests
