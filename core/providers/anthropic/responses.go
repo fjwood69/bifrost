@@ -83,6 +83,11 @@ type anthropicToResponsesStreamState struct {
 	// webSearchItemIDs tracks item IDs for WebSearch tools so their argument deltas
 	// can be skipped and regenerated synthetically (with sanitization) at output_item.done.
 	webSearchItemIDs map[string]bool
+	// skippedOutputIndices tracks output indices whose content_block_start was suppressed
+	// (e.g. reasoning blocks from non-Anthropic providers).  All subsequent events
+	// (content_block_delta, content_block_stop) for these indices must also be suppressed
+	// to prevent "Content block not found" errors in the client SDK.
+	skippedOutputIndices map[int]bool
 }
 
 type anthropicToResponsesStreamStateKeyType struct{}
@@ -1411,6 +1416,17 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 		return nil
 	}
 
+	// Suppress all events for block indices whose content_block_start was skipped.
+	// Skipping content_block_start (e.g. for reasoning from non-Anthropic providers) must
+	// also suppress the follow-on delta and stop events; otherwise the client SDK errors
+	// with "Content block not found" when it receives an event for an unknown index.
+	if bifrostResp.ExtraFields.Provider != schemas.Anthropic && bifrostResp.OutputIndex != nil {
+		streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+		if streamState.skippedOutputIndices != nil && streamState.skippedOutputIndices[*bifrostResp.OutputIndex] {
+			return nil
+		}
+	}
+
 	streamResp := &AnthropicStreamEvent{}
 
 	// Map ResponsesStreamResponse types to Anthropic stream events
@@ -1542,6 +1558,13 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 						// encrypted thinking blob.  Skip the entire content_block_start so that
 						// neither thinking nor redacted_thinking events reach the client.
 						if bifrostResp.ExtraFields.Provider != schemas.Anthropic {
+							if bifrostResp.OutputIndex != nil {
+								streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+								if streamState.skippedOutputIndices == nil {
+									streamState.skippedOutputIndices = make(map[int]bool)
+								}
+								streamState.skippedOutputIndices[*bifrostResp.OutputIndex] = true
+							}
 							return nil
 						}
 						contentBlock.Type = AnthropicContentBlockTypeThinking
@@ -1561,6 +1584,13 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 						if bifrostResp.Item.ResponsesReasoning != nil {
 							// Non-Anthropic providers: skip the block entirely (same reason as above).
 							if bifrostResp.ExtraFields.Provider != schemas.Anthropic {
+								if bifrostResp.OutputIndex != nil {
+									streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
+									if streamState.skippedOutputIndices == nil {
+										streamState.skippedOutputIndices = make(map[int]bool)
+									}
+									streamState.skippedOutputIndices[*bifrostResp.OutputIndex] = true
+								}
 								return nil
 							}
 							// This is actually reasoning content, not a function call
