@@ -875,6 +875,12 @@ func HandleOpenAIChatCompletionRequest(
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, sendBackRawRequest, sendBackRawResponse)
 	}
 
+	// Strip any DeepSeek DSML tool call markers from response content.
+	// Proper tool calls are in the ToolCalls array; DSML in content is noise.
+	for i := range response.Choices {
+		stripDSMLFromChatResponse(&response.Choices[i])
+	}
+
 	response.ExtraFields.Latency = latency.Milliseconds()
 
 	// Set raw request if enabled
@@ -1283,6 +1289,12 @@ func HandleOpenAIChatCompletionStreaming(
 				}
 				if response.Created != 0 && created == 0 {
 					created = response.Created
+				}
+
+				// Strip any DeepSeek DSML tool call markers from streaming content.
+				// Proper tool calls arrive in Delta.ToolCalls; DSML in Content is noise.
+				if choice.ChatStreamResponseChoice != nil {
+					stripDSMLFromStreamDelta(choice.ChatStreamResponseChoice.Delta)
 				}
 
 				// Handle regular content chunks, including reasoning
