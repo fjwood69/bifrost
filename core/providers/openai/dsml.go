@@ -34,6 +34,35 @@ func stripDSMLFromStreamDelta(delta *schemas.ChatStreamResponseChoiceDelta) bool
 	return false
 }
 
+// stripDSMLFromStreamDeltaWithBuffer nils out Content if the combination of the current
+// delta and a provided rolling buffer contains a DSML marker. It updates the buffer
+// with the tail of the current content to catch split markers in subsequent deltas.
+func stripDSMLFromStreamDeltaWithBuffer(delta *schemas.ChatStreamResponseChoiceDelta, buffer *string) bool {
+	if delta == nil || delta.Content == nil {
+		return false
+	}
+
+	// Append current content to buffer
+	full := *buffer + *delta.Content
+
+	if strings.Contains(full, dsmlMarker) {
+		delta.Content = nil
+		*buffer = "" // Clear buffer once detected
+		return true
+	}
+
+	// Keep only the last 20 bytes to catch split markers in the next delta.
+	// The marker "<｜DSML｜" is 11 bytes in UTF-8.
+	const maxBufferLen = 20
+	if len(full) > maxBufferLen {
+		*buffer = full[len(full)-maxBufferLen:]
+	} else {
+		*buffer = full
+	}
+
+	return false
+}
+
 // stripDSMLFromChatResponse strips DSML markers from assistant message content
 // strings in a non-streaming response choice.  The ToolCalls array is untouched.
 func stripDSMLFromChatResponse(choice *schemas.BifrostResponseChoice) {

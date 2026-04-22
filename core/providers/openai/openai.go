@@ -1120,6 +1120,7 @@ func HandleOpenAIChatCompletionStreaming(
 		var created int
 		forwardedTerminalFinishReason := false
 		dsmlTextSuppressed := false
+		dsmlBuffer := ""
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -1298,7 +1299,7 @@ func HandleOpenAIChatCompletionStreaming(
 				// detected — the XML spans many small deltas, not just the one with the marker.
 				if choice.ChatStreamResponseChoice != nil {
 					if !dsmlTextSuppressed {
-						if stripDSMLFromStreamDelta(choice.ChatStreamResponseChoice.Delta) {
+						if stripDSMLFromStreamDeltaWithBuffer(choice.ChatStreamResponseChoice.Delta, &dsmlBuffer) {
 							dsmlTextSuppressed = true
 						}
 					} else if choice.ChatStreamResponseChoice.Delta != nil {
