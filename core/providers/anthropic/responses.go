@@ -1741,6 +1741,14 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 		}
 
 	case schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta:
+		// Non-Anthropic providers (e.g. Qwen3.5 via Parasail) emit reasoning deltas but
+		// the stream state assigns them to the text content block (index 0).  Forwarding
+		// these as thinking_delta events causes the Anthropic SDK to error:
+		//   "Content block is not a thinking block"
+		// Skip them -- the text content still flows via OutputTextDelta.
+		if bifrostResp.ExtraFields.Provider != schemas.Anthropic {
+			return nil
+		}
 		streamResp.Type = AnthropicStreamEventTypeContentBlockDelta
 		// Use OutputIndex for global Anthropic indexing
 		if bifrostResp.OutputIndex != nil {
@@ -4180,6 +4188,12 @@ func convertBifrostReasoningToAnthropicThinking(msg *schemas.ResponsesMessage) [
 	if msg.Content != nil && msg.Content.ContentBlocks != nil {
 		for _, block := range msg.Content.ContentBlocks {
 			if block.Type == schemas.ResponsesOutputMessageContentTypeReasoning && block.Text != nil {
+				// Only emit thinking blocks with a valid Anthropic signature.
+				// Non-Anthropic providers (Qwen3.5, Kimi, etc.) supply no signature;
+				// the Anthropic SDK rejects thinking blocks that lack one.
+				if block.Signature == nil || *block.Signature == "" {
+					continue
+				}
 				thinkingBlock := AnthropicContentBlock{
 					Type:      AnthropicContentBlockTypeThinking,
 					Thinking:  block.Text,
@@ -4190,13 +4204,8 @@ func convertBifrostReasoningToAnthropicThinking(msg *schemas.ResponsesMessage) [
 		}
 	} else if msg.ResponsesReasoning != nil {
 		if msg.ResponsesReasoning.Summary != nil {
-			for _, reasoningContent := range msg.ResponsesReasoning.Summary {
-				thinkingBlock := AnthropicContentBlock{
-					Type:     AnthropicContentBlockTypeThinking,
-					Thinking: &reasoningContent.Text,
-				}
-				thinkingBlocks = append(thinkingBlocks, thinkingBlock)
-			}
+			// Summary-based reasoning has no Anthropic signature -- skip to avoid
+			// emitting thinking blocks that the SDK would reject.
 		} else if msg.ResponsesReasoning.EncryptedContent != nil {
 			thinkingBlock := AnthropicContentBlock{
 				Type: AnthropicContentBlockTypeRedactedThinking,
