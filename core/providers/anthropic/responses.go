@@ -1538,6 +1538,12 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 						contentBlock.Type = AnthropicContentBlockTypeText
 						contentBlock.Text = schemas.Ptr("")
 					case schemas.ResponsesMessageTypeReasoning:
+						// Non-Anthropic providers cannot supply a valid Anthropic signature or
+						// encrypted thinking blob.  Skip the entire content_block_start so that
+						// neither thinking nor redacted_thinking events reach the client.
+						if bifrostResp.ExtraFields.Provider != schemas.Anthropic {
+							return nil
+						}
 						contentBlock.Type = AnthropicContentBlockTypeThinking
 						contentBlock.Thinking = schemas.Ptr("")
 						contentBlock.Signature = schemas.Ptr("")
@@ -1553,6 +1559,10 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 						// Check if this item actually has reasoning content (misclassified)
 						// When thinking is enabled, reasoning content might be incorrectly classified as FunctionCall
 						if bifrostResp.Item.ResponsesReasoning != nil {
+							// Non-Anthropic providers: skip the block entirely (same reason as above).
+							if bifrostResp.ExtraFields.Provider != schemas.Anthropic {
+								return nil
+							}
 							// This is actually reasoning content, not a function call
 							contentBlock.Type = AnthropicContentBlockTypeThinking
 							contentBlock.Thinking = schemas.Ptr("")
