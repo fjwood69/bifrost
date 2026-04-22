@@ -21,13 +21,17 @@ const dsmlMarker = "<｜DSML｜"
 // stripDSMLFromStreamDelta nils out the Content pointer of a streaming delta
 // if it contains a DSML marker.  The structured ToolCalls array is untouched
 // so that properly-formatted tool calls are still forwarded.
-func stripDSMLFromStreamDelta(delta *schemas.ChatStreamResponseChoiceDelta) {
+// stripDSMLFromStreamDelta nils out Content if it contains a DSML marker
+// and returns true so the caller can suppress subsequent text deltas.
+func stripDSMLFromStreamDelta(delta *schemas.ChatStreamResponseChoiceDelta) bool {
 	if delta == nil || delta.Content == nil {
-		return
+		return false
 	}
 	if strings.Contains(*delta.Content, dsmlMarker) {
 		delta.Content = nil
+		return true
 	}
+	return false
 }
 
 // stripDSMLFromChatResponse strips DSML markers from assistant message content

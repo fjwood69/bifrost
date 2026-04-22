@@ -2066,6 +2066,9 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 		// Convert usage from Bifrost to Anthropic
 		if bifrostResp.Response != nil {
 			anthropicContentDeltaEvent.Usage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Response.Usage)
+			if anthropicContentDeltaEvent.Usage == nil {
+				anthropicContentDeltaEvent.Usage = &AnthropicUsage{}
+			}
 			if bifrostResp.Response.StopReason != nil {
 				anthropicContentDeltaEvent.Delta = &AnthropicStreamDelta{
 					StopReason:   schemas.Ptr(ConvertBifrostFinishReasonToAnthropic(*bifrostResp.Response.StopReason)),
@@ -2137,6 +2140,9 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 			// Convert usage from Bifrost format to Anthropic format using common converter
 			if bifrostResp.Response != nil {
 				streamResp.Usage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Response.Usage)
+				if streamResp.Usage == nil {
+					streamResp.Usage = &AnthropicUsage{}
+				}
 			} else {
 					// Ensure usage block exists with zero values to avoid client-side undefined errors
 					streamResp.Usage = &AnthropicUsage{

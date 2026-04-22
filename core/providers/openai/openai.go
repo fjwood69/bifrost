@@ -1119,6 +1119,7 @@ func HandleOpenAIChatCompletionStreaming(
 		var modelName string
 		var created int
 		forwardedTerminalFinishReason := false
+		dsmlTextSuppressed := false
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -1293,8 +1294,16 @@ func HandleOpenAIChatCompletionStreaming(
 
 				// Strip any DeepSeek DSML tool call markers from streaming content.
 				// Proper tool calls arrive in Delta.ToolCalls; DSML in Content is noise.
+				// dsmlTextSuppressed stays true for the rest of the stream once DSML is
+				// detected — the XML spans many small deltas, not just the one with the marker.
 				if choice.ChatStreamResponseChoice != nil {
-					stripDSMLFromStreamDelta(choice.ChatStreamResponseChoice.Delta)
+					if !dsmlTextSuppressed {
+						if stripDSMLFromStreamDelta(choice.ChatStreamResponseChoice.Delta) {
+							dsmlTextSuppressed = true
+						}
+					} else if choice.ChatStreamResponseChoice.Delta != nil {
+						choice.ChatStreamResponseChoice.Delta.Content = nil
+					}
 				}
 
 				// Handle regular content chunks, including reasoning
