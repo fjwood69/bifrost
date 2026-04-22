@@ -2768,6 +2768,20 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 		}
 	}
 
+	// Strip redacted_thinking blocks for non-Anthropic providers.
+	// Non-Anthropic providers (Gemini, Parasail, etc.) may surface thinking tokens
+	// that Bifrost converts to redacted_thinking blocks — but these blocks have no
+	// valid Anthropic encryption and the Claude Code SDK rejects them outright.
+	if bifrostResp.ExtraFields.Provider != schemas.Anthropic {
+		filtered := contentBlocks[:0]
+		for _, block := range contentBlocks {
+			if block.Type != AnthropicContentBlockTypeRedactedThinking {
+				filtered = append(filtered, block)
+			}
+		}
+		contentBlocks = filtered
+	}
+
 	if len(contentBlocks) > 0 {
 		anthropicResp.Content = contentBlocks
 	} else {
