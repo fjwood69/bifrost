@@ -14,7 +14,7 @@ The goal here was to point Claude Code at a local Bifrost gateway instead, so th
 
 ## Setup
 
-**Environment**: Asus NUC 15 Pro running Ubuntu 24.04, Bifrost in a rootless Podman container.
+**Environment**: Ubuntu host, Bifrost running as a local service or container.
 
 **The core trick** is making Claude Code believe it is talking to Anthropic while actually talking to Bifrost:
 
@@ -147,14 +147,14 @@ All Claude Code agentic features tested and working through Bifrost:
 
 ```bash
 cd ~/bifrost
-podman build -t localhost/bifrost:claude-code-compat -f transports/Dockerfile.local .
-podman rm -f bifrost
-podman run -d --restart=always --network=host --name=bifrost --userns=keep-id \
+docker build -t bifrost:claude-code-compat -f transports/Dockerfile.local .
+docker rm -f bifrost
+docker run -d --restart=always --network=host --name=bifrost \
   -e APP_PORT=8787 -e APP_HOST=0.0.0.0 \
   -e PARASAIL_API_KEY="..." \
   -e GOOGLE_GEMINI_API_KEY="..." \
-  -v /data/bifrost:/app/data \
-  localhost/bifrost:claude-code-compat
+  -v /path/to/bifrost/data:/app/data \
+  bifrost:claude-code-compat
 ```
 
 Use `transports/Dockerfile.local` — it builds from the local source tree. Do not use `docker.io/maximhq/bifrost:latest`; it does not contain these fixes.
