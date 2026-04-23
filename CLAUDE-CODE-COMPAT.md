@@ -220,7 +220,7 @@ The flag is set per-provider in the custom provider config JSON stored in the Bi
 - **Plan phase** — no `tool_result` blocks in any user message → route to `MODEL_A`
 - **Act phase** — at least one `tool_result` block present in a user message → route to `MODEL_B`
 
-This signal is reliable because `tool_result` blocks only appear after the model has previously returned a `tool_use` block. The first turn of any task and every intermediate planning turn have no tool results. Tool execution turns always do.
+The signal is the **last user message only** — not the full history. This means the routing resets correctly turn by turn: a plain-text follow-up question routes back to the plan model even mid-conversation, and the next batch of tool results routes back to the act model. The routing alternates naturally with the flow of the task rather than latching permanently to act after the first tool use.
 
 **Implementation** (`transports/bifrost-http/integrations/anthropic.go`):
 
