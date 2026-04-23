@@ -11,30 +11,29 @@ PROFILE = os.path.expanduser("~/.claude-profiles/claude-jr/settings.json")
 ACTIVE  = os.path.expanduser("~/.claude-profiles/.active")
 
 MODELS = [
-    # Plan/Act compound
-    ("plan-act",      "plan:Deepinfra/moonshotai/Kimi-K2.6||act:nebius/deepseek-ai/DeepSeek-V3.2",
-                                                                           "Plan: Kimi / Act: DeepSeek",         "Plan phase → Kimi K2.6 (DeepInfra); Act phase → DeepSeek V3.2 (Nebius)"),
     # DeepSeek V3.2
-    ("deepseek-di",   "Deepinfra/deepseek-ai/DeepSeek-V3.2",              "DeepSeek V3.2 (DeepInfra)",          "Strong coder via Bifrost → DeepInfra"),
-    ("deepseek-n",    "nebius/deepseek-ai/DeepSeek-V3.2",                  "DeepSeek V3.2 (Nebius)",             "Strong coder via Bifrost → Nebius"),
-    ("deepseek",      "parasail/deepseek-ai/DeepSeek-V3.2",                "DeepSeek V3.2 (Parasail)",           "Strong coder via Bifrost → Parasail"),
-    ("deepseek-v",    "vertex/deepseek-ai/deepseek-v3.2-maas",             "DeepSeek V3.2 (Vertex MaaS)",        "Strong coder via Bifrost → Vertex AI"),
+    ("deepseek-di",   "Deepinfra/deepseek-ai/DeepSeek-V3.2",           "DeepSeek V3.2 (DeepInfra)",        "Strong coder via Bifrost → DeepInfra"),
+    ("deepseek-n",    "nebius/deepseek-ai/DeepSeek-V3.2",               "DeepSeek V3.2 (Nebius)",           "Strong coder via Bifrost → Nebius"),
+    ("deepseek",      "parasail/deepseek-ai/DeepSeek-V3.2",             "DeepSeek V3.2 (Parasail)",         "Strong coder via Bifrost → Parasail"),
+    ("deepseek-v",    "vertex/deepseek-ai/deepseek-v3.2-maas",          "DeepSeek V3.2 (Vertex MaaS)",      "Strong coder via Bifrost → Vertex AI"),
     # Gemini
-    ("gemini",        "gemini/gemini-3-flash-preview",                     "Gemini 3 Flash (Google)",            "1M ctx via Bifrost → Google"),
+    ("gemini",        "gemini/gemini-3-flash-preview",                  "Gemini 3 Flash (Google)",          "1M ctx via Bifrost → Google"),
     # Gemma
-    ("gemma26b",      "parasail/google/gemma-4-26B-A4B-it",                "Gemma 4 26B A4B (Parasail)",         "Google MoE via Bifrost → Parasail"),
-    ("gemma26b-v",    "vertex/google/gemma-4-26b-a4b-it-maas",             "Gemma 4 26B A4B (Vertex MaaS)",      "Google MoE via Bifrost → Vertex AI"),
+    ("gemma26b",      "parasail/google/gemma-4-26B-A4B-it",             "Gemma 4 26B A4B (Parasail)",       "Google MoE via Bifrost → Parasail"),
+    ("gemma26b-v",    "vertex/google/gemma-4-26b-a4b-it-maas",          "Gemma 4 26B A4B (Vertex MaaS)",    "Google MoE via Bifrost → Vertex AI"),
     # GLM
-    ("glm5",          "vertex/zai-org/glm-5-maas",                         "GLM-5 (Vertex MaaS)",                "Zhipu GLM-5 via Bifrost → Vertex AI"),
+    ("glm5",          "vertex/zai-org/glm-5-maas",                      "GLM-5 (Vertex MaaS)",              "Zhipu GLM-5 via Bifrost → Vertex AI"),
     # Kimi
-    ("kimi-di",       "Deepinfra/moonshotai/Kimi-K2.6",                    "Kimi K2.6 (DeepInfra)",              "Agentic MoE via Bifrost → DeepInfra"),
-    ("kimi",          "parasail/moonshotai/Kimi-K2.6",                     "Kimi K2.6 (Parasail)",               "Agentic MoE via Bifrost → Parasail"),
+    ("kimi-di",       "Deepinfra/moonshotai/Kimi-K2.6",                 "Kimi K2.6 (DeepInfra)",            "Agentic MoE via Bifrost → DeepInfra"),
+    ("kimi",          "parasail/moonshotai/Kimi-K2.6",                  "Kimi K2.6 (Parasail)",             "Agentic MoE via Bifrost → Parasail"),
     # MiniMax
-    ("minimax",       "nebius/MiniMaxAI/MiniMax-M2.5",                     "MiniMax M2.5 (Nebius)",              "MiniMax via Bifrost → Nebius"),
+    ("minimax",       "nebius/MiniMaxAI/MiniMax-M2.5",                  "MiniMax M2.5 (Nebius)",            "MiniMax via Bifrost → Nebius"),
     # Qwen
-    ("qwen3-next",    "nebius/Qwen/Qwen3-Next-80B-A3B-Thinking",           "Qwen3-Next-80B Thinking (Nebius)",   "Thinking MoE via Bifrost → Nebius"),
-    ("qwen35",        "parasail/Qwen/Qwen3.5-35B-A3B-FP8",                 "Qwen3.5-35B FP8 (Parasail)",         "Fast MoE via Bifrost → Parasail"),
+    ("qwen3-next",    "nebius/Qwen/Qwen3-Next-80B-A3B-Thinking",        "Qwen3-Next-80B Thinking (Nebius)", "Thinking MoE via Bifrost → Nebius"),
+    ("qwen35",        "parasail/Qwen/Qwen3.5-35B-A3B-FP8",              "Qwen3.5-35B FP8 (Parasail)",       "Fast MoE via Bifrost → Parasail"),
 ]
+
+# ── Terminal helpers ───────────────────────────────────────────────────────────
 
 def getch():
     fd = sys.stdin.fileno()
@@ -45,8 +44,12 @@ def getch():
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
+def hr(char="─", width=56):
+    print(f"  {char * width}")
+
+# ── VS Code profile ────────────────────────────────────────────────────────────
+
 def find_vscode_profile():
-    """Return VS Code profile settings.json path, or None."""
     cfg = os.path.expanduser("~/.claude-profiles/.vscode-profile-path")
     if os.path.exists(cfg):
         return open(cfg).read().strip()
@@ -75,13 +78,15 @@ def update_vscode_profile(env: dict):
     except Exception as e:
         print(f"  Warning: could not update VS Code profile: {e}")
 
-def apply(model_id, name, desc, settings):
+# ── Apply ──────────────────────────────────────────────────────────────────────
+
+def apply(model_id, display_name, desc, settings):
     settings.setdefault("env", {})
     settings["env"]["ANTHROPIC_CUSTOM_MODEL_OPTION"]             = model_id
-    settings["env"]["ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"]        = name
+    settings["env"]["ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"]        = display_name
     settings["env"]["ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"] = desc
     settings["model"]                                             = model_id
-    settings["availableModels"]                                   = [mid for _, mid, _, _ in MODELS]
+    settings["availableModels"] = [mid for _, mid, _, _ in MODELS]
 
     with open(PROFILE, "w") as f:
         json.dump(settings, f, indent=2)
@@ -93,47 +98,81 @@ def apply(model_id, name, desc, settings):
             json.dump(settings, f, indent=2)
         update_vscode_profile(settings["env"])
 
-def main():
-    with open(PROFILE) as f:
-        settings = json.load(f)
+# ── Current model description ──────────────────────────────────────────────────
 
-    current_id = settings.get("env", {}).get("ANTHROPIC_CUSTOM_MODEL_OPTION", "")
-    current_name = next((n for _, mid, n, _ in MODELS if mid == current_id), current_id)
+def describe_current(model_id):
+    if "||" in model_id:
+        plan_id = act_id = ""
+        for part in model_id.split("||"):
+            kv = part.strip().split(":", 1)
+            if len(kv) == 2:
+                if kv[0].strip() == "plan": plan_id = kv[1].strip()
+                elif kv[0].strip() == "act":  act_id  = kv[1].strip()
+        plan_name = next((n for _, mid, n, _ in MODELS if mid == plan_id), plan_id or "?")
+        act_name  = next((n for _, mid, n, _ in MODELS if mid == act_id),  act_id  or "?")
+        return f"Plan: {plan_name}  /  Act: {act_name}", True
+    name = next((n for _, mid, n, _ in MODELS if mid == model_id), model_id)
+    return name, False
 
-    alternatives = [(k, mid, name, desc) for k, mid, name, desc in MODELS if mid != current_id]
+# ── Model picker ───────────────────────────────────────────────────────────────
 
-    print(f"\n  claude-jr model")
-    print(f"  ───────────────")
-    print(f"  Current: {current_name}\n")
+def pick_model(step_label, subtitle, exclude_id=None):
+    """Show a numbered model list and return (model_id, name, desc) or None to go back."""
+    candidates = [(mid, name, desc) for _, mid, name, desc in MODELS if mid != exclude_id]
 
-    for i, (_, _, name, desc) in enumerate(alternatives, 1):
+    print(f"\n  ── {step_label} {'─' * max(0, 50 - len(step_label))}")
+    print(f"  {subtitle}\n")
+    for i, (_, name, desc) in enumerate(candidates, 1):
         print(f"  {i:>2}  {name}")
         print(f"      {desc}")
-    print(f"\n   0  Keep current and exit\n")
-
-    if len(alternatives) > 9:
-        print("  Select: ", end="", flush=True)
-        try:
-            ch = input().strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\n  No change.\n")
-            return
-    else:
-        print("  Select: ", end="", flush=True)
-        ch = getch()
-        print(ch)
-
-    if ch == "0" or ch in ("\x03", "\x1b", "q", ""):
-        print("  No change.\n")
-        return
+    print(f"\n   0  Back / Cancel\n")
+    print("  Select: ", end="", flush=True)
 
     try:
+        ch = input().strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+
+    if ch in ("0", "q", ""):
+        return None
+    try:
         idx = int(ch) - 1
-        if 0 <= idx < len(alternatives):
-            _, model_id, name, desc = alternatives[idx]
+        if 0 <= idx < len(candidates):
+            return candidates[idx]
+    except ValueError:
+        pass
+    print("  Invalid choice.")
+    return None
+
+# ── Single model flow ──────────────────────────────────────────────────────────
+
+def single_flow(settings, current_id):
+    candidates = [(mid, name, desc) for _, mid, name, desc in MODELS if mid != current_id]
+
+    print(f"\n  ── Choose model {'─' * 40}")
+    for i, (_, name, desc) in enumerate(candidates, 1):
+        print(f"  {i:>2}  {name}")
+        print(f"      {desc}")
+    print(f"\n   0  Cancel\n")
+    print("  Select: ", end="", flush=True)
+
+    try:
+        ch = input().strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n  No change.\n")
+        return
+
+    if ch in ("0", "q", ""):
+        print("  No change.\n")
+        return
+    try:
+        idx = int(ch) - 1
+        if 0 <= idx < len(candidates):
+            model_id, name, desc = candidates[idx]
             apply(model_id, name, desc, settings)
             active = open(ACTIVE).read().strip() if os.path.exists(ACTIVE) else ""
-            print(f"  ✓ Switched to {name}")
+            print(f"\n  ✓ Switched to {name}")
             if active == "claude-jr":
                 print("  Applied to live config — reload VS Code.\n")
             else:
@@ -141,6 +180,112 @@ def main():
         else:
             print("  Invalid choice.\n")
     except ValueError:
+        print("  Invalid choice.\n")
+
+# ── Plan/Act flow ──────────────────────────────────────────────────────────────
+
+def plan_act_flow(settings):
+    while True:
+        # Step 1: Plan model
+        result = pick_model(
+            "Step 1 of 2 — Plan model",
+            "Used for planning turns (last message has no tool results)"
+        )
+        if result is None:
+            print("  No change.\n")
+            return
+
+        plan_id, plan_name, _ = result
+
+        while True:
+            # Step 2: Act model
+            result = pick_model(
+                "Step 2 of 2 — Act model",
+                "Used for execution turns (last message has tool results)",
+                exclude_id=None  # allow same model for plan and act
+            )
+            if result is None:
+                break  # back to Step 1
+
+            act_id, act_name, _ = result
+
+            # Step 3: Confirm
+            print(f"\n  ── Confirm {'─' * 46}")
+            print(f"  Plan:  {plan_name}")
+            print(f"  Act:   {act_name}")
+            print(f"\n  c  Confirm  |  r  Re-pick from Step 1  |  q  Cancel\n")
+            print("  Select [c/r/q]: ", end="", flush=True)
+
+            try:
+                ch = getch()
+                print(ch)
+            except (EOFError, KeyboardInterrupt):
+                print("\n  No change.\n")
+                return
+
+            if ch in ("c", "\r", "\n", " "):
+                compound      = f"plan:{plan_id}||act:{act_id}"
+                display_name  = f"Plan: {plan_name} / Act: {act_name}"
+                desc          = f"Plan → {plan_name}; Act → {act_name}"
+                apply(compound, display_name, desc, settings)
+                active = open(ACTIVE).read().strip() if os.path.exists(ACTIVE) else ""
+                print(f"\n  ✓ Set Plan: {plan_name}")
+                print(f"         Act:  {act_name}")
+                if active == "claude-jr":
+                    print("  Applied to live config — reload VS Code.\n")
+                else:
+                    print("  Saved to profile — takes effect on next claude-jr.\n")
+                return
+
+            elif ch in ("r",):
+                break  # break inner loop → back to Step 1
+
+            elif ch in ("q", "\x03", "\x1b", "0"):
+                print("  No change.\n")
+                return
+
+            else:
+                print("  Invalid — press c, r, or q.")
+                continue
+
+        # inner loop exited with break → re-run Step 1
+        if result is not None:
+            # came from 'r' at confirm — restart
+            continue
+        # came from '0' at Step 2 — restart Step 1
+        continue
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    with open(PROFILE) as f:
+        settings = json.load(f)
+
+    current_id   = settings.get("env", {}).get("ANTHROPIC_CUSTOM_MODEL_OPTION", "")
+    current_desc, is_plan_act = describe_current(current_id)
+
+    print(f"\n  claude-jr model")
+    hr()
+    print(f"  Current: {current_desc}")
+    hr()
+    print()
+    print("   1  Single model   — one model for all turns")
+    print("   2  Plan / Act     — separate models for planning and execution")
+    print()
+    print("   0  Exit unchanged")
+    print()
+    print("  Select [0-2]: ", end="", flush=True)
+
+    ch = getch()
+    print(ch)
+
+    if ch in ("0", "q", "\x03", "\x1b", ""):
+        print("  No change.\n")
+    elif ch == "1":
+        single_flow(settings, current_id)
+    elif ch == "2":
+        plan_act_flow(settings)
+    else:
         print("  Invalid choice.\n")
 
 if __name__ == "__main__":
