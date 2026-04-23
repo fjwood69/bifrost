@@ -404,6 +404,15 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 		}
 	}
 
+	// Skip all governance for plan/act compound model strings (plan:MODEL||act:MODEL).
+	// These are split per-turn by the Anthropic RequestConverter; governance routing
+	// rules and load balancing must not modify the compound string before that split.
+	if model, ok := payload["model"].(string); ok {
+		if strings.HasPrefix(model, "plan:") && strings.Contains(model, "||act:") {
+			return nil, nil
+		}
+	}
+
 	// Attaching team and customer based on the virtual key
 	if virtualKey != nil {
 		if virtualKey.TeamID != nil {
