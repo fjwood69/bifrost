@@ -299,20 +299,23 @@ func parsePlanActModel(model string) (string, string, bool) {
 	return planModel, actModel, true
 }
 
-// hasToolResultBlocks returns true if any user message in the conversation contains
-// a tool_result content block — indicating the request is in the act/execution phase.
+// hasToolResultBlocks returns true if the LAST user message contains a tool_result
+// content block. Checking only the last user message (not full history) means the
+// routing resets correctly when the user asks a new question after a tool turn —
+// that new message has no tool_results, so it routes back to the plan model.
 func hasToolResultBlocks(messages []anthropic.AnthropicMessage) bool {
-	for _, msg := range messages {
-		if msg.Role != "user" {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "user" {
 			continue
 		}
-		for _, block := range msg.Content.ContentBlocks {
+		for _, block := range messages[i].Content.ContentBlocks {
 			switch block.Type {
 			case anthropic.AnthropicContentBlockTypeToolResult,
 				anthropic.AnthropicContentBlockTypeMCPToolResult:
 				return true
 			}
 		}
+		return false // last user message found, no tool_result
 	}
 	return false
 }
