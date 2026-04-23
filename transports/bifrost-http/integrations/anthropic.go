@@ -492,7 +492,9 @@ func extractAnthropicListModelsParams(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 func stubCountTokensForNonAnthropic(ctx *fasthttp.RequestCtx, _ *schemas.BifrostContext, req interface{}) (bool, error) {
 	if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
 		provider, _ := schemas.ParseModelString(anthropicReq.Model, "")
-		if provider != schemas.Anthropic && provider != "" {
+		// Stub for any non-Anthropic provider, including unrecognised model strings
+		// (e.g. the plan/act compound format) which ParseModelString returns as empty.
+		if provider != schemas.Anthropic {
 			ctx.SetStatusCode(fasthttp.StatusOK)
 			ctx.SetContentType("application/json")
 			ctx.SetBodyString(`{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}`)
