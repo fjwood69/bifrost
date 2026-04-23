@@ -1396,6 +1396,15 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		return nil, err
 	}
 
+	// Custom providers that don't implement /v1/responses (e.g. DeepInfra) can opt into ChatCompletion fallback.
+	if provider.customProviderConfig != nil && provider.customProviderConfig.UseChatCompletionForResponses {
+		chatResponse, bifrostErr := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		return chatResponse.ToBifrostResponsesResponse(), nil
+	}
+
 	if provider.disableStore {
 		if request.Params == nil {
 			request.Params = &schemas.ResponsesParameters{}
@@ -1558,6 +1567,13 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
 		return nil, err
 	}
+
+	// Custom providers that don't implement /v1/responses (e.g. DeepInfra) can opt into ChatCompletionStream fallback.
+	if provider.customProviderConfig != nil && provider.customProviderConfig.UseChatCompletionForResponses {
+		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+		return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
+	}
+
 	var authHeader map[string]string
 	if key.Value.GetValue() != "" {
 		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}

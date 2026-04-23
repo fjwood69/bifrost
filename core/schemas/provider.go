@@ -403,11 +403,12 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 }
 
 type CustomProviderConfig struct {
-	CustomProviderKey    string                 `json:"-"`                                // Custom provider key, internally set by Bifrost
-	IsKeyLess            bool                   `json:"is_key_less"`                      // Whether the custom provider requires a key (not allowed for Bedrock)
-	BaseProviderType     ModelProvider          `json:"base_provider_type"`               // Base provider type
-	AllowedRequests      *AllowedRequests       `json:"allowed_requests,omitempty"`       // Allowed requests for the custom provider
-	RequestPathOverrides map[RequestType]string `json:"request_path_overrides,omitempty"` // Mapping of request type to its custom path which will override the default path of the provider (not allowed for Bedrock)
+	CustomProviderKey                string                 `json:"-"`                                           // Custom provider key, internally set by Bifrost
+	IsKeyLess                        bool                   `json:"is_key_less"`                                 // Whether the custom provider requires a key (not allowed for Bedrock)
+	BaseProviderType                 ModelProvider          `json:"base_provider_type"`                          // Base provider type
+	AllowedRequests                  *AllowedRequests       `json:"allowed_requests,omitempty"`                  // Allowed requests for the custom provider
+	RequestPathOverrides             map[RequestType]string `json:"request_path_overrides,omitempty"`            // Mapping of request type to its custom path which will override the default path of the provider (not allowed for Bedrock)
+	UseChatCompletionForResponses    bool                   `json:"use_chat_completion_for_responses,omitempty"` // Convert Responses API calls to ChatCompletion (for OpenAI-compat providers that don't implement /v1/responses)
 }
 
 // IsOperationAllowed checks if a specific operation is allowed for this custom provider
