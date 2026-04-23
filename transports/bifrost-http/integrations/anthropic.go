@@ -77,6 +77,15 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
+					// Plan/act routing: "plan:MODEL_A||act:MODEL_B"
+					// Requests with tool_result blocks are in the act/execution phase; all others are plan/thinking.
+					if planModel, actModel, ok := parsePlanActModel(anthropicReq.Model); ok {
+						if hasToolResultBlocks(anthropicReq.Messages) {
+							anthropicReq.Model = actModel
+						} else {
+							anthropicReq.Model = planModel
+						}
+					}
 					bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
 					normalizeBifrostInputContentBlocks(bifrostReq)
 					return &schemas.BifrostRequest{
@@ -263,6 +272,49 @@ func extractPassthroughHeaders(allHeaders map[string][]string, provider schemas.
 	}
 
 	return filtered
+}
+
+// parsePlanActModel parses a compound "plan:MODEL_A||act:MODEL_B" model string.
+// Returns planModel, actModel, and true if the format is recognised; otherwise all empty/false.
+func parsePlanActModel(model string) (string, string, bool) {
+	if !strings.Contains(model, "||") {
+		return "", "", false
+	}
+	var planModel, actModel string
+	for _, part := range strings.Split(model, "||") {
+		kv := strings.SplitN(strings.TrimSpace(part), ":", 2)
+		if len(kv) != 2 {
+			return "", "", false
+		}
+		switch strings.TrimSpace(kv[0]) {
+		case "plan":
+			planModel = strings.TrimSpace(kv[1])
+		case "act":
+			actModel = strings.TrimSpace(kv[1])
+		}
+	}
+	if planModel == "" || actModel == "" {
+		return "", "", false
+	}
+	return planModel, actModel, true
+}
+
+// hasToolResultBlocks returns true if any user message in the conversation contains
+// a tool_result content block — indicating the request is in the act/execution phase.
+func hasToolResultBlocks(messages []anthropic.AnthropicMessage) bool {
+	for _, msg := range messages {
+		if msg.Role != "user" {
+			continue
+		}
+		for _, block := range msg.Content.ContentBlocks {
+			switch block.Type {
+			case anthropic.AnthropicContentBlockTypeToolResult,
+				anthropic.AnthropicContentBlockTypeMCPToolResult:
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func CreateAnthropicListModelsRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
