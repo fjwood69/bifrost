@@ -1,5 +1,7 @@
 # Bifrost AI Gateway
 
+> **Fork note:** The [`claude-code-compat`](../../tree/claude-code-compat) branch adds compatibility fixes for using Bifrost as a drop-in backend for [Claude Code](https://claude.ai/code) — routing requests to Parasail, Google Gemini, and Vertex AI MaaS via the Anthropic Messages API. See [CLAUDE-CODE-COMPAT.md](../../blob/claude-code-compat/CLAUDE-CODE-COMPAT.md) for details.
+
 [![Go Report Card](https://goreportcard.com/badge/github.com/maximhq/bifrost/core)](https://goreportcard.com/report/github.com/maximhq/bifrost/core)
 [![Discord badge](https://dcbadge.limes.pink/api/server/https://discord.gg/exN5KAydbU?style=flat)](https://discord.gg/exN5KAydbU)
 [![codecov](https://codecov.io/gh/maximhq/bifrost/branch/main/graph/badge.svg)](https://codecov.io/gh/maximhq/bifrost)
