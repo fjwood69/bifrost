@@ -55,7 +55,7 @@ A separate `CLAUDE_CONFIG_DIR` means Claude Code writes its state, logs, and cac
 
 For switching between multiple profiles (e.g. Anthropic API, subscription, and Bifrost), a file-swap approach works well: store a snapshot of `settings.json`, `credentials.json`, and `claude.json` per profile in a `~/.claude-profiles/` directory, and copy the active one into `~/.claude/` on each switch. This keeps the switcher logic simple and Claude Code never knows the difference.
 
-See [`fjwood69/ai-stack`](https://github.com/fjwood69/ai-stack) (`CLAUDE.md` → Claude Code Backend Switcher) for a full implementation of this approach with three profiles (Anthropic API, OAuth subscription, Bifrost/claude-jr) and VS Code sidebar integration.
+A full implementation of this approach — three profiles (Anthropic API, OAuth subscription, Bifrost), a shell switcher script, and VS Code sidebar integration — is described in detail in the companion `CLAUDE.md` of the host project that uses this fork.
 
 ---
 
@@ -279,7 +279,7 @@ All Claude Code agentic features tested and working through Bifrost:
 | Feature | Status |
 |---|---|
 | Basic chat (streaming) | ✅ |
-| Tool use (Bash, Read, Write, Edit) | ✅ Qwen3.5, DeepSeek, Kimi |
+| Tool use (Bash, Read, Write, Edit) | ✅ Qwen3.5, DeepSeek, Kimi, Gemini 3 Flash, Gemma 4 26B |
 | Plan Mode | ✅ |
 | Multi-step agentic tasks | ✅ |
 | `count_tokens` preflight | ✅ stub |
