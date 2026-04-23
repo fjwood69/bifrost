@@ -29,6 +29,8 @@ Provider routing is by model ID prefix in the request body:
 - `parasail/...` → Parasail (OpenAI-compatible, `api.parasail.io`)
 - `gemini/...` → Google Gemini API
 - `vertex/...` → Vertex AI MaaS
+- `Deepinfra/...` → DeepInfra (OpenAI-compatible, `api.deepinfra.com/v1/openai`)
+- `nebius/...` → Nebius AI Studio (OpenAI-compatible, `api.studio.nebius.com/v1`)
 
 A `jr-model` shell script switches the active model and keeps `ANTHROPIC_CUSTOM_MODEL_OPTION` in sync (required because Claude Code's internal model validator rejects non-`claude-*` IDs).
 
@@ -118,6 +120,90 @@ Sets `BifrostContextKeyPassthroughExtraParams = true` so the extra params are me
 
 ---
 
+### 7. OpenAI-Compat Providers Without `/v1/responses` — 404 Errors
+
+**Symptom**: Custom OpenAI-compatible providers (e.g. DeepInfra) returned 404 errors for every chat request routed through the Anthropic compat layer.
+
+**Cause**: The Anthropic-to-OpenAI translation layer routes all requests through `ResponsesRequest`, which calls `Responses()` / `ResponsesStream()` on the upstream provider. These methods send `POST /v1/responses` — a responses-API endpoint that most third-party OpenAI-compatible providers don't implement (DeepInfra only exposes standard Chat Completions at `/v1/chat/completions`). Providers like Parasail work because they have native `Responses()` overrides that internally convert to a Chat Completion call; the base OpenAI provider does not.
+
+A secondary issue: some providers expose their API at a path that already includes `/v1` (e.g. DeepInfra's base URL is `https://api.deepinfra.com/v1/openai`). Bifrost appends its own `/v1/models`, `/v1/chat/completions` etc., producing doubled paths like `https://api.deepinfra.com/v1/openai/v1/models`. This is fixed independently via `request_path_overrides` in the provider's custom config — set `list_models` → `/models`, `chat_completion` → `/chat/completions`, etc.
+
+**Fix**: Added `UseChatCompletionForResponses bool` to `CustomProviderConfig` in `core/schemas/provider.go`. When set to `true`, the base OpenAI provider's `Responses()` and `ResponsesStream()` methods convert the request via `ToChatRequest()` and call `ChatCompletion()` / `ChatCompletionStream()` instead of attempting a `/v1/responses` call:
+
+```go
+// In providers/openai/openai.go
+if provider.customProviderConfig != nil && provider.customProviderConfig.UseChatCompletionForResponses {
+    chatResponse, bifrostErr := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+    // ...
+    return chatResponse.ToBifrostResponsesResponse(), nil
+}
+```
+
+The flag is set per-provider in the custom provider config JSON stored in the Bifrost database. No code changes are needed per provider — any custom OpenAI-compat backend can opt in.
+
+---
+
+### 8. Plan/Act Model Routing for Agentic Tasks
+
+**Motivation**: In a typical Claude Code agentic loop, the model alternates between two distinct cognitive modes — reasoning about what to do (planning) and executing tool calls (acting). These modes have different cost/quality tradeoffs: a strong reasoning model is valuable for planning; a fast, capable coder is better for mechanical execution. Normally Claude Code sends every request to the same model.
+
+**Feature**: Support a compound model string in the format `plan:MODEL_A||act:MODEL_B`. When Bifrost receives a request with this model ID, it inspects the message history to determine which phase the current request represents:
+
+- **Plan phase** — no `tool_result` blocks in any user message → route to `MODEL_A`
+- **Act phase** — at least one `tool_result` block present in a user message → route to `MODEL_B`
+
+This signal is reliable because `tool_result` blocks only appear after the model has previously returned a `tool_use` block. The first turn of any task and every intermediate planning turn have no tool results. Tool execution turns always do.
+
+**Implementation** (`transports/bifrost-http/integrations/anthropic.go`):
+
+```go
+func parsePlanActModel(model string) (string, string, bool) {
+    if !strings.Contains(model, "||") {
+        return "", "", false
+    }
+    var planModel, actModel string
+    for _, part := range strings.Split(model, "||") {
+        kv := strings.SplitN(strings.TrimSpace(part), ":", 2)
+        if len(kv) != 2 { return "", "", false }
+        switch strings.TrimSpace(kv[0]) {
+        case "plan": planModel = strings.TrimSpace(kv[1])
+        case "act":  actModel  = strings.TrimSpace(kv[1])
+        }
+    }
+    if planModel == "" || actModel == "" { return "", "", false }
+    return planModel, actModel, true
+}
+
+func hasToolResultBlocks(messages []anthropic.AnthropicMessage) bool {
+    for _, msg := range messages {
+        if msg.Role != "user" { continue }
+        for _, block := range msg.Content.ContentBlocks {
+            switch block.Type {
+            case anthropic.AnthropicContentBlockTypeToolResult,
+                 anthropic.AnthropicContentBlockTypeMCPToolResult:
+                return true
+            }
+        }
+    }
+    return false
+}
+```
+
+The `RequestConverter` in `createAnthropicMessagesRouteConfig` calls `parsePlanActModel` on every incoming request. If parsing succeeds, `hasToolResultBlocks` selects the target model before `ToBifrostResponsesRequest` is called. Non-compound model strings pass through unchanged.
+
+**Example** (set via `ANTHROPIC_CUSTOM_MODEL_OPTION`):
+```
+plan:Deepinfra/moonshotai/Kimi-K2.6||act:nebius/deepseek-ai/DeepSeek-V3.2
+```
+
+Plan turns route to Kimi K2.6 (strong reasoning, DeepInfra); act turns route to DeepSeek V3.2 (fast coder, Nebius). The full conversation history is forwarded on every request, so the act model always has the plan model's reasoning in context.
+
+**Works transparently with Claude Code Plan Mode**: In explicit Plan Mode (user clicks the Plan button), Claude Code never emits `tool_use` blocks — every request is in the plan phase. The routing still works correctly: all Plan Mode requests go to the plan model.
+
+**Verified**: non-streaming and streaming paths tested with explicit plan-phase and act-phase payloads. Response `model` field in both cases correctly reflects the selected downstream model.
+
+---
+
 ## Current State
 
 All Claude Code agentic features tested and working through Bifrost:
@@ -125,20 +211,23 @@ All Claude Code agentic features tested and working through Bifrost:
 | Feature | Status |
 |---|---|
 | Basic chat (streaming) | ✅ |
-| Tool use (Bash, Read, Write, Edit) | ✅ Qwen3.5, Gemma 26B |
+| Tool use (Bash, Read, Write, Edit) | ✅ Qwen3.5, DeepSeek, Kimi |
 | Plan Mode | ✅ |
 | Multi-step agentic tasks | ✅ |
 | `count_tokens` preflight | ✅ stub |
 | Thinking/reasoning suppression | ✅ |
 | DSML marker stripping | ✅ |
+| Custom provider Chat Completion fallback | ✅ `UseChatCompletionForResponses` flag |
+| Plan/Act model routing | ✅ compound model string |
 
 **Providers tested**:
-- Parasail: Qwen3.5-35B-A3B-FP8, DeepSeek-V3.2, Gemma 4 26B
+- Parasail: Qwen3.5-35B-A3B-FP8, DeepSeek-V3.2, Gemma 4 26B, Kimi K2.6
 - Google: Gemini 3 Flash Preview
 - Vertex AI MaaS: DeepSeek-V3.2, Gemma 4 26B, GLM-5
+- DeepInfra: DeepSeek-V3.2, Kimi K2.6 (via `UseChatCompletionForResponses`)
+- Nebius AI Studio: DeepSeek-V3.2, Qwen3-Next-80B, MiniMax M2.5
 
 **Known limitations**:
-- Kimi K2.6 (Parasail): unstable on the standard Chat Completions path — Kimi is designed for a separate Responses API gateway (`api-webflux.saas.parasail.io`). Routing not yet implemented.
 - Subagent calls (e.g. `Agent(subagent_type="Explore")`) spawn Haiku 4.5 internally and inherit `ANTHROPIC_BASE_URL`. Bifrost's `ParseModelString` defaults unprefixed `claude-*` model IDs to the Anthropic provider, which would silently bill Anthropic. Mitigation: disable the Anthropic provider key in Bifrost when using this branch for non-Anthropic routing only.
 
 ---
