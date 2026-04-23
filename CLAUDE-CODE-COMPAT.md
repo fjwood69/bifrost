@@ -36,6 +36,74 @@ A `jr-model` shell script switches the active model and keeps `ANTHROPIC_CUSTOM_
 
 ---
 
+## Workflow
+
+### Profile Isolation
+
+Claude Code stores its config, credentials, and active session in a single directory — `~/.claude/` by default, or wherever `CLAUDE_CONFIG_DIR` points. If you already have Claude Code set up against the Anthropic API or a claude.ai subscription, you don't want Bifrost routing to interfere with it.
+
+The simplest isolation is a shell alias that sets both env vars together:
+
+```bash
+alias claude-jr='ANTHROPIC_BASE_URL=http://localhost:8787/anthropic \
+  ANTHROPIC_API_KEY=sk-ant-api03-claudejr00bifrostgateway0000 \
+  CLAUDE_CONFIG_DIR=$HOME/.claude-jr \
+  claude'
+```
+
+A separate `CLAUDE_CONFIG_DIR` means Claude Code writes its state, logs, and cached config to a different directory — your main Anthropic session is untouched.
+
+For switching between multiple profiles (e.g. Anthropic API, subscription, and Bifrost), a file-swap approach works well: store a snapshot of `settings.json`, `credentials.json`, and `claude.json` per profile in a `~/.claude-profiles/` directory, and copy the active one into `~/.claude/` on each switch. This keeps the switcher logic simple and Claude Code never knows the difference.
+
+See [`fjwood69/ai-stack`](https://github.com/fjwood69/ai-stack) (`CLAUDE.md` → Claude Code Backend Switcher) for a full implementation of this approach with three profiles (Anthropic API, OAuth subscription, Bifrost/claude-jr) and VS Code sidebar integration.
+
+---
+
+### Model Switching (`ANTHROPIC_CUSTOM_MODEL_OPTION`)
+
+Claude Code validates that model IDs begin with `claude-` before sending the request. Non-`claude-*` model IDs are rejected client-side — the request never reaches Bifrost.
+
+The `ANTHROPIC_CUSTOM_MODEL_OPTION` environment variable bypasses this check. When set, Claude Code substitutes its value as the model ID in every outbound request:
+
+```bash
+export ANTHROPIC_CUSTOM_MODEL_OPTION=parasail/Qwen/Qwen3.5-35B-A3B-FP8
+```
+
+This is how provider routing works in practice. The env var is set per-session and lives in the profile's `settings.json` under the `env` block:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:8787/anthropic",
+    "ANTHROPIC_API_KEY": "sk-ant-api03-claudejr00bifrostgateway0000",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION": "parasail/Qwen/Qwen3.5-35B-A3B-FP8"
+  }
+}
+```
+
+A model switcher script (`jr-model` in the ai-stack reference implementation) updates this field in both the profile store and the live `~/.claude/settings.json`, then optionally reloads Claude Code. It also sets cosmetic display vars `ANTHROPIC_CUSTOM_MODEL_OPTION_NAME` and `ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION` which appear in the Claude Code UI but have no effect on routing.
+
+The plan/act compound model string is set the same way — it's just a value for `ANTHROPIC_CUSTOM_MODEL_OPTION`:
+
+```
+plan:Deepinfra/moonshotai/Kimi-K2.6||act:nebius/deepseek-ai/DeepSeek-V3.2
+```
+
+---
+
+### Plan/Act — Which Claude Code Mode to Use
+
+The plan/act routing is driven by the presence of `tool_result` blocks in the message history. This has a practical consequence for how you run Claude Code:
+
+**Use "Ask before edits" (normal agentic mode)** — this is the recommended mode for plan/act routing:
+- First request: no tool results yet → plan model (e.g. Kimi K2.6) reasons about the problem
+- After the first tool call and its result: act model (e.g. DeepSeek V3.2) takes over the mechanical execution loop
+- The "ask before edits" pause still fires before file writes, so you retain oversight without losing the model switching benefit
+
+**Avoid explicit Plan Mode** if you want the act model to be invoked. In Plan Mode, Claude Code never emits tool calls — so `tool_result` blocks never appear, every request goes to the plan model, and the act routing never fires. Plan Mode is useful if you want the plan model to write out a full plan for your review before any execution begins, but that means only one model is ever used for that session.
+
+---
+
 ## Issues Encountered and Fixed
 
 Running Claude Code through Bifrost surfaced a series of compatibility problems. Each is described below in the order it was hit.
@@ -198,7 +266,7 @@ plan:Deepinfra/moonshotai/Kimi-K2.6||act:nebius/deepseek-ai/DeepSeek-V3.2
 
 Plan turns route to Kimi K2.6 (strong reasoning, DeepInfra); act turns route to DeepSeek V3.2 (fast coder, Nebius). The full conversation history is forwarded on every request, so the act model always has the plan model's reasoning in context.
 
-**Works transparently with Claude Code Plan Mode**: In explicit Plan Mode (user clicks the Plan button), Claude Code never emits `tool_use` blocks — every request is in the plan phase. The routing still works correctly: all Plan Mode requests go to the plan model.
+**Claude Code mode matters**: For the act model to be invoked, use normal "Ask before edits" mode — tool results accumulate as the agentic loop runs and trigger the switch to the act model. In explicit Plan Mode, Claude Code never emits tool calls, so `tool_result` blocks never appear and every request goes to the plan model. Plan Mode works correctly for that use case (pure planning, single model), but the act routing never fires.
 
 **Verified**: non-streaming and streaming paths tested with explicit plan-phase and act-phase payloads. Response `model` field in both cases correctly reflects the selected downstream model.
 
