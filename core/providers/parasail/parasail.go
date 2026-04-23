@@ -23,6 +23,39 @@ type ParasailProvider struct {
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
 
+// injectThinkingDisable suppresses reasoning/thinking output for models that produce DSML
+// markers (DeepSeek) or extended-thinking tokens (Qwen3.x). Without this, the streaming
+// DSML suppression in the OpenAI handler zeros out all Delta.Content after the first
+// marker — which includes tool call argument chunks, causing empty file_path / content errors.
+//
+// Disabling thinking at the Parasail level means the markers never appear, so the suppressor
+// never fires and tool arguments flow through intact.
+func injectThinkingDisable(ctx *schemas.BifrostContext, request *schemas.BifrostChatRequest) {
+	modelLower := strings.ToLower(request.Model)
+
+	var thinkingParam map[string]interface{}
+	switch {
+	case strings.Contains(modelLower, "deepseek"):
+		thinkingParam = map[string]interface{}{"thinking": false}
+	case strings.Contains(modelLower, "qwen"):
+		thinkingParam = map[string]interface{}{"enable_thinking": false}
+	default:
+		return
+	}
+
+	if request.Params == nil {
+		request.Params = &schemas.ChatParameters{}
+	}
+	if request.Params.ExtraParams == nil {
+		request.Params.ExtraParams = make(map[string]interface{})
+	}
+	// Only inject if the caller hasn't already set a preference
+	if _, exists := request.Params.ExtraParams["chat_template_kwargs"]; !exists {
+		request.Params.ExtraParams["chat_template_kwargs"] = thinkingParam
+	}
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+}
+
 // NewParasailProvider creates a new Parasail provider instance.
 // It initializes the HTTP client with the provided configuration and sets up response pools.
 // The client is configured with timeouts, concurrency limits, and optional proxy settings.
@@ -95,6 +128,7 @@ func (provider *ParasailProvider) TextCompletionStream(ctx *schemas.BifrostConte
 
 // ChatCompletion performs a chat completion request to the Parasail API.
 func (provider *ParasailProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	injectThinkingDisable(ctx, request)
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -116,6 +150,7 @@ func (provider *ParasailProvider) ChatCompletion(ctx *schemas.BifrostContext, ke
 // Uses Parasail's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostStreamChunk objects representing the stream or an error if the request fails.
 func (provider *ParasailProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	injectThinkingDisable(ctx, request)
 	var authHeader map[string]string
 	if key.Value.GetValue() != "" {
 		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
