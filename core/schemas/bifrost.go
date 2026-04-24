@@ -58,6 +58,8 @@ const (
 	VLLM        ModelProvider = "vllm"
 	Runway      ModelProvider = "runway"
 	Fireworks   ModelProvider = "fireworks"
+	Deepinfra   ModelProvider = "deepinfra"
+	DeepInfra   ModelProvider = "Deepinfra"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -69,6 +71,8 @@ var SupportedBaseProviders = []ModelProvider{
 	OpenAI,
 	HuggingFace,
 	Replicate,
+	Deepinfra,
+	DeepInfra,
 }
 
 // StandardProviders is the list of all built-in (non-custom) providers.
@@ -96,6 +100,8 @@ var StandardProviders = []ModelProvider{
 	VLLM,
 	Runway,
 	Fireworks,
+	Deepinfra,
+	DeepInfra,
 }
 
 // RequestType represents the type of request being made to a provider.
