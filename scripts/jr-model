@@ -7,8 +7,10 @@ import os
 import tty
 import termios
 
-PROFILE = os.path.expanduser("~/.claude-profiles/claude-jr/settings.json")
-ACTIVE  = os.path.expanduser("~/.claude-profiles/.active")
+PROFILE      = os.path.expanduser("~/.claude-profiles/claude-jr/settings.json")
+ACTIVE       = os.path.expanduser("~/.claude-profiles/.active")
+BIFROST_DB   = "/data/bifrost/config.db"
+BIFROST_VK   = "claude-jr"
 
 MODELS = [
     # DeepSeek V3.2
@@ -21,14 +23,37 @@ MODELS = [
     # GLM
     ("glm5",          "vertex/zai-org/glm-5-maas",                      "GLM-5 (Vertex MaaS)",              "Zhipu GLM-5 via Bifrost → Vertex AI"),
     # Kimi
-    ("kimi-di",       "Deepinfra/moonshotai/Kimi-K2.6",                 "Kimi K2.6 (DeepInfra)",            "Agentic MoE via Bifrost → DeepInfra"),
-    ("kimi",          "parasail/moonshotai/Kimi-K2.6",                  "Kimi K2.6 (Parasail)",             "Agentic MoE via Bifrost → Parasail"),
+    ("kimi",          "Deepinfra/moonshotai/Kimi-K2.6",                 "Kimi K2.6",                        "80% DeepInfra / 20% Parasail via routing rule"),
     # MiniMax
     ("minimax",       "nebius/MiniMaxAI/MiniMax-M2.5",                  "MiniMax M2.5 (Nebius)",            "MiniMax via Bifrost → Nebius"),
     # Qwen
     ("qwen3-next",    "nebius/Qwen/Qwen3-Next-80B-A3B-Thinking",        "Qwen3-Next-80B Thinking (Nebius)", "Thinking MoE via Bifrost → Nebius"),
     ("qwen35",        "parasail/Qwen/Qwen3.5-35B-A3B-FP8",              "Qwen3.5-35B FP8 (Parasail)",       "Fast MoE via Bifrost → Parasail"),
 ]
+
+# ── Bifrost VK helpers ────────────────────────────────────────────────────────
+
+def update_bifrost_vk_override(compound_model: str) -> bool:
+    """Write model_override to the Bifrost governance DB and restart the container."""
+    import sqlite3, subprocess
+    try:
+        conn = sqlite3.connect(BIFROST_DB)
+        conn.execute(
+            "UPDATE governance_virtual_keys SET description = ? WHERE name = ?",
+            [json.dumps({"model_override": compound_model}), BIFROST_VK],
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"  Warning: could not update Bifrost DB: {e}")
+        return False
+    try:
+        subprocess.run(["podman", "restart", "bifrost"],
+                       check=True, capture_output=True, timeout=30)
+    except Exception as e:
+        print(f"  Warning: could not restart Bifrost container: {e}")
+        return False
+    return True
 
 # ── Terminal helpers ───────────────────────────────────────────────────────────
 
@@ -232,6 +257,11 @@ def plan_act_flow(settings):
                     print("  Applied to live config — reload VS Code.\n")
                 else:
                     print("  Saved to profile — takes effect on next claude-jr.\n")
+                print("  Updating Bifrost VK and restarting container...", end="", flush=True)
+                if update_bifrost_vk_override(compound):
+                    print(" done.\n")
+                else:
+                    print("\n  ⚠ Manual steps needed: update Bifrost VK description and restart container.\n")
                 return
 
             elif ch in ("r",):

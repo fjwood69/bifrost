@@ -138,12 +138,12 @@ log.close()
     echo "$target" > "$PROFILE_DIR/.active"
     log_switch "  .active → $target"
 
-    # Step 5: Kill Claude Code to force clean reinit on next VS Code reload
-    pkill -f "claude-code|claude/resources|native-binary/claude" \
-        && log_switch "  pkill OK" \
-        || log_switch "  pkill found nothing (OK)"
+    # Step 5: (pkill removed — it caused VS Code to auto-relaunch with stale env vars
+    #          before the user could reload the window, triggering a login prompt.
+    #          Manual "Reload Window" in VS Code picks up the updated env vars cleanly.)
+    log_switch "  (no pkill)"
 
-    echo "✓ Switched to $target — reload VS Code."
+    echo "✓ Switched to $target — do Ctrl+Shift+P → Reload Window in VS Code."
     log_switch "DONE $target"
 }
 

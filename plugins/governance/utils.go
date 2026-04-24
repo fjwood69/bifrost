@@ -31,7 +31,8 @@ func ParseVirtualKeyFromFastHTTPRequest(req *fasthttp.RequestCtx) *string {
 		}
 	}
 	xAPIKey := string(req.Request.Header.Peek("x-api-key"))
-	if xAPIKey != "" && strings.HasPrefix(strings.ToLower(xAPIKey), VirtualKeyPrefix) {
+	if xAPIKey != "" && (strings.HasPrefix(strings.ToLower(xAPIKey), VirtualKeyPrefix) ||
+		strings.HasPrefix(strings.ToLower(xAPIKey), AnthropicCompatVKPrefix)) {
 		return bifrost.Ptr(xAPIKey)
 	}
 	xGoogleAPIKey := string(req.Request.Header.Peek("x-goog-api-key"))
@@ -67,7 +68,8 @@ func parseVirtualKeyFromHTTPRequest(req *schemas.HTTPRequest) *string {
 		return bifrost.Ptr(virtualKeyValue)
 	}
 	xAPIKey := req.CaseInsensitiveHeaderLookup("x-api-key")
-	if xAPIKey != "" && strings.HasPrefix(strings.ToLower(xAPIKey), VirtualKeyPrefix) {
+	if xAPIKey != "" && (strings.HasPrefix(strings.ToLower(xAPIKey), VirtualKeyPrefix) ||
+		strings.HasPrefix(strings.ToLower(xAPIKey), AnthropicCompatVKPrefix)) {
 		return bifrost.Ptr(xAPIKey)
 	}
 	// Checking x-goog-api-key header

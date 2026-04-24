@@ -30,7 +30,8 @@ const PluginName = "governance"
 const (
 	governanceRejectedContextKey schemas.BifrostContextKey = "bf-governance-rejected"
 
-	VirtualKeyPrefix = "sk-bf-"
+	VirtualKeyPrefix            = "sk-bf-"
+	AnthropicCompatVKPrefix     = "sk-ant-" // allows sk-ant-* VKs registered in DB (claude-code-compat fork)
 )
 
 // Config is the configuration for the governance plugin
@@ -404,11 +405,39 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 		}
 	}
 
+	// VK model override: if the VK description is a JSON object with a "model_override" key,
+	// substitute unroutable claude-* model IDs with the override before any other governance.
+	// This lets plan/act compound strings (plan:M||act:M) reach Bifrost even though Claude Code
+	// falls back to "claude-sonnet-4-6" for compound model IDs it cannot validate client-side.
+	if virtualKey != nil && virtualKey.Description != "" {
+		var descMap map[string]string
+		if err := sonic.UnmarshalString(virtualKey.Description, &descMap); err == nil {
+			if override, hasOverride := descMap["model_override"]; hasOverride && override != "" {
+				if model, ok := payload["model"].(string); ok {
+					provider, _ := schemas.ParseModelString(model, "")
+					if provider == "" && schemas.IsAnthropicModel(model) {
+						payload["model"] = override
+						needsMarshal = true
+					}
+				}
+			}
+		}
+	}
+
 	// Skip all governance for plan/act compound model strings (plan:MODEL||act:MODEL).
 	// These are split per-turn by the Anthropic RequestConverter; governance routing
 	// rules and load balancing must not modify the compound string before that split.
+	// Also fires here when the model override above promoted a claude-* fallback to a
+	// compound string — marshal the updated body before returning.
 	if model, ok := payload["model"].(string); ok {
 		if strings.HasPrefix(model, "plan:") && strings.Contains(model, "||act:") {
+			if needsMarshal {
+				body, err := sonic.Marshal(payload)
+				if err != nil {
+					return nil, err
+				}
+				req.Body = body
+			}
 			return nil, nil
 		}
 	}
