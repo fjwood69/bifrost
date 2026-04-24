@@ -182,7 +182,7 @@ func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 
 			ctx.Request.SetBodyRaw(body)
 			ctx.Request.Header.Del(fasthttp.HeaderContentEncoding)
-			ctx.Request.Header.Del(fasthttp.HeaderContentLength)
+			ctx.Request.Header.SetContentLength(len(body))
 			next(ctx)
 		}
 	}
@@ -558,9 +558,12 @@ func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 	// because the large-payload-mode flag is only set later inside the handler hook.
 	if threshold, ok := ctx.UserValue(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64); ok && threshold > 0 {
 		cl := int64(ctx.Request.Header.ContentLength())
-		// Skip body copy when CL exceeds threshold OR CL is unknown (streaming/
-		// chunked, e.g. after streaming decompression deletes the header).
-		if cl > threshold || cl < 0 {
+		// Skip body copy when CL exceeds threshold.
+		if cl > threshold {
+			return
+		}
+		// If CL is unknown (streaming/chunked), only skip if we don't have a materialized body yet.
+		if cl < 0 && ctx.RequestBodyStream() != nil {
 			return
 		}
 	}
