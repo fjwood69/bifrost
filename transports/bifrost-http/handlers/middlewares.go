@@ -553,27 +553,18 @@ func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 		req.PathParams[keyStr] = valueStr
 	})
 
-	// Skip body copy for large payloads.
-	// Check threshold first (set by RequestThresholdMiddleware before this middleware runs)
-	// because the large-payload-mode flag is only set later inside the handler hook.
-	if threshold, ok := ctx.UserValue(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64); ok && threshold > 0 {
-		cl := int64(ctx.Request.Header.ContentLength())
-		// Skip body copy when CL exceeds threshold.
-		if cl > threshold {
-			return
+	// Materialize body for plugins.
+	// We always copy the body if it's already materialized in fasthttp (ctx.Request.Body()),
+	// unless it's explicitly marked as a large payload or exceeds the threshold.
+	threshold, _ := ctx.UserValue(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64)
+	isLargePayload, _ := ctx.UserValue(schemas.BifrostContextKeyLargePayloadMode).(bool)
+
+	if !isLargePayload && (threshold <= 0 || int64(ctx.Request.Header.ContentLength()) <= threshold) {
+		body := ctx.Request.Body()
+		if len(body) > 0 {
+			req.Body = make([]byte, len(body))
+			copy(req.Body, body)
 		}
-		// If CL is unknown (streaming/chunked), only skip if we don't have a materialized body yet.
-		if cl < 0 && ctx.RequestBodyStream() != nil {
-			return
-		}
-	}
-	if isLargePayload, ok := ctx.UserValue(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
-		return
-	}
-	body := ctx.Request.Body()
-	if len(body) > 0 {
-		req.Body = make([]byte, len(body))
-		copy(req.Body, body)
 	}
 }
 
