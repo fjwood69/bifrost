@@ -127,6 +127,7 @@ except Exception as e:
 vs['claudeCode.environmentVariables'] = env_vars
 json.dump(vs, open('$VSCODE_PROFILE', 'w'), indent=4)
 lprint('VS Code profile updated')
+
 log.close()
 " 2>&1
     else

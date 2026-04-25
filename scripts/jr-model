@@ -9,12 +9,15 @@ import termios
 
 PROFILE      = os.path.expanduser("~/.claude-profiles/claude-jr/settings.json")
 ACTIVE       = os.path.expanduser("~/.claude-profiles/.active")
-BIFROST_DB   = "/data/bifrost/config.db"
-BIFROST_VK   = "claude-jr"
+BIFROST_DB        = "/data/bifrost/config.db"
+BIFROST_VK        = "claude-jr"
+BIFROST_VK_PASSTHROUGH = "claude-jr-passthrough"
 
 MODELS = [
     # DeepSeek V3.2
     ("deepseek",      "nebius/deepseek-ai/DeepSeek-V3.2",               "DeepSeek V3.2",                    "66% Nebius / 34% Parasail / Vertex fallback via routing rule"),
+    # DeepSeek V4 Flash (new)
+    ("deepseek-v4-flash", "Deepinfra/deepseek-ai/DeepSeek-V4-Flash",    "DeepSeek V4 Flash (DeepInfra)",    "DeepSeek V4 Flash via Bifrost → DeepInfra"),
     # Gemini
     ("gemini",        "gemini/gemini-3-flash-preview",                  "Gemini 3 Flash (Google)",          "1M ctx via Bifrost → Google"),
     # Gemma
@@ -34,13 +37,18 @@ MODELS = [
 # ── Bifrost VK helpers ────────────────────────────────────────────────────────
 
 def update_bifrost_vk_override(compound_model: str) -> bool:
-    """Write model_override to the Bifrost governance DB and restart the container."""
+    """Write model_override to both Bifrost governance VKs and restart the container."""
     import sqlite3, subprocess
     try:
+        desc = json.dumps({"model_override": compound_model})
         conn = sqlite3.connect(BIFROST_DB)
         conn.execute(
             "UPDATE governance_virtual_keys SET description = ? WHERE name = ?",
-            [json.dumps({"model_override": compound_model}), BIFROST_VK],
+            [desc, BIFROST_VK],
+        )
+        conn.execute(
+            "UPDATE governance_virtual_keys SET description = ? WHERE name = ?",
+            [desc, BIFROST_VK_PASSTHROUGH],
         )
         conn.commit()
         conn.close()
