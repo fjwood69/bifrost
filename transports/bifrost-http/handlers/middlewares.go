@@ -183,6 +183,8 @@ func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			ctx.Request.SetBodyRaw(body)
 			ctx.Request.Header.Del(fasthttp.HeaderContentEncoding)
 			ctx.Request.Header.SetContentLength(len(body))
+			logger.Debug("[Decompression] Materialized request body: size=%d, path=%s", 
+				len(body), string(ctx.Path()))
 			next(ctx)
 		}
 	}
@@ -195,9 +197,12 @@ func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 // Chunked requests (unknown size) always stream to be safe.
 func shouldStreamDecompress(config *lib.Config, ctx *fasthttp.RequestCtx) bool {
 	contentLength := ctx.Request.Header.ContentLength()
-	// Chunked transfer encoding: fasthttp reports -1. Size unknown, stream to be safe.
+	// Chunked transfer encoding: fasthttp reports -1. Size unknown.
+	// We fall through to the buffered path which has its own size limit,
+	// allowing small chunked requests (like Claude Code) to be materialized
+	// for plugin inspection.
 	if contentLength < 0 {
-		return true
+		return false
 	}
 	var threshold int64 = schemas.DefaultLargePayloadRequestThresholdBytes
 	if config != nil && config.StreamingDecompressThreshold > 0 {
@@ -572,7 +577,6 @@ func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 	// If path/method is different, throw error
 	if req.Method != string(ctx.Method()) || req.Path != string(ctx.Path()) {
-		logger.Error("request method/path mismatch: %s %s != %s %s", req.Method, req.Path, string(ctx.Method()), string(ctx.Path()))
 		SendError(ctx, fasthttp.StatusConflict, "request method/path was modified by a plugin, this is not allowed")
 		return
 	}

@@ -344,8 +344,15 @@ func (p *GovernancePlugin) UpdateEnforceAuthOnInference(enforceAuthOnInference b
 // It modifies the request in-place and returns nil to continue, or an HTTPResponse to short-circuit.
 // Optimized to skip unnecessary operations: only unmarshals/marshals when needed
 func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
-	virtualKeyValue := parseVirtualKeyFromHTTPRequest(req)
+	virtualKeyValue, debugHeaders := parseVirtualKeyFromHTTPRequest(req)
 	hasRoutingRules := p.store.HasRoutingRules(ctx)
+
+	p.logger.Debug("[Governance] HTTPTransportPreHook: path=%s, vk_header=%v, has_routing_rules=%v, body_len=%d", 
+		req.Path, virtualKeyValue != nil, hasRoutingRules, len(req.Body))
+
+	if virtualKeyValue == nil {
+		p.logger.Debug("[Governance] No VK found in headers: %s", debugHeaders)
+	}
 
 	// If no virtual key and no routing rules configured, skip all processing
 	if virtualKeyValue == nil && !hasRoutingRules {
@@ -400,22 +407,27 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 	// Process virtual key if provided
 	if virtualKeyValue != nil {
 		virtualKey, ok = p.store.GetVirtualKey(ctx, *virtualKeyValue)
-		if !ok || virtualKey == nil || !virtualKey.IsActive {
+		if !ok || virtualKey == nil {
+			p.logger.Debug("[Governance] Virtual key not found in store for token: %s", *virtualKeyValue)
+			return nil, nil
+		}
+		p.logger.Debug("[Governance] Resolved virtual key: %s (active: %v)", virtualKey.Name, virtualKey.IsActive)
+		if !virtualKey.IsActive {
+			p.logger.Debug("[Governance] Virtual key is inactive: %s", virtualKey.Name)
 			return nil, nil
 		}
 	}
 
-	// VK model override: if the VK description is a JSON object with a "model_override" key,
-	// substitute unroutable claude-* model IDs with the override before any other governance.
-	// This lets plan/act compound strings (plan:M||act:M) reach Bifrost even though Claude Code
-	// falls back to "claude-sonnet-4-6" for compound model IDs it cannot validate client-side.
+	// VK model override
 	if virtualKey != nil && virtualKey.Description != "" {
 		var descMap map[string]string
 		if err := sonic.UnmarshalString(virtualKey.Description, &descMap); err == nil {
 			if override, hasOverride := descMap["model_override"]; hasOverride && override != "" {
 				if model, ok := payload["model"].(string); ok {
 					provider, _ := schemas.ParseModelString(model, "")
-					if provider == "" && schemas.IsAnthropicModel(model) {
+					p.logger.Debug("[Governance] Checking override for model: %s (provider: %s, VK: %s)", model, provider, virtualKey.Name)
+					if (provider == "" || provider == schemas.Anthropic) && (schemas.IsAnthropicModel(model) || model == "sonnet") {
+						p.logger.Info("[Governance] Applying model override: %s -> %s (VK: %s)", model, override, virtualKey.Name)
 						payload["model"] = override
 						needsMarshal = true
 					}

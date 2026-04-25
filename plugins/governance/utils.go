@@ -49,35 +49,46 @@ func ParseVirtualKeyFromFastHTTPRequest(req *fasthttp.RequestCtx) *string {
 //
 // Returns:
 //   - *string: The virtual key if found, nil otherwise
-func parseVirtualKeyFromHTTPRequest(req *schemas.HTTPRequest) *string {
-	var virtualKeyValue string
+func parseVirtualKeyFromHTTPRequest(req *schemas.HTTPRequest) (*string, string) {
 	vkHeader := req.CaseInsensitiveHeaderLookup("x-bf-vk")
 	if vkHeader != "" && strings.HasPrefix(strings.ToLower(vkHeader), VirtualKeyPrefix) {
-		return bifrost.Ptr(vkHeader)
+		return bifrost.Ptr(vkHeader), ""
 	}
 	authHeader := req.CaseInsensitiveHeaderLookup("Authorization")
 	if authHeader != "" {
 		if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
 			authHeaderValue := strings.TrimSpace(authHeader[7:]) // Remove "Bearer " prefix
-			if authHeaderValue != "" && strings.HasPrefix(strings.ToLower(authHeaderValue), VirtualKeyPrefix) {
-				virtualKeyValue = authHeaderValue
+			if authHeaderValue != "" && (strings.HasPrefix(strings.ToLower(authHeaderValue), VirtualKeyPrefix) ||
+				strings.HasPrefix(strings.ToLower(authHeaderValue), AnthropicCompatVKPrefix)) {
+				return bifrost.Ptr(authHeaderValue), ""
 			}
 		}
-	}
-	if virtualKeyValue != "" {
-		return bifrost.Ptr(virtualKeyValue)
 	}
 	xAPIKey := req.CaseInsensitiveHeaderLookup("x-api-key")
 	if xAPIKey != "" && (strings.HasPrefix(strings.ToLower(xAPIKey), VirtualKeyPrefix) ||
 		strings.HasPrefix(strings.ToLower(xAPIKey), AnthropicCompatVKPrefix)) {
-		return bifrost.Ptr(xAPIKey)
+		return bifrost.Ptr(xAPIKey), ""
 	}
 	// Checking x-goog-api-key header
 	xGoogleAPIKey := req.CaseInsensitiveHeaderLookup("x-goog-api-key")
 	if xGoogleAPIKey != "" && strings.HasPrefix(strings.ToLower(xGoogleAPIKey), VirtualKeyPrefix) {
-		return bifrost.Ptr(xGoogleAPIKey)
+		return bifrost.Ptr(xGoogleAPIKey), ""
 	}
-	return nil
+
+	var sb strings.Builder
+	for k, v := range req.Headers {
+		if sb.Len() > 0 {
+			sb.WriteString(", ")
+		}
+		val := v
+		if len(v) > 10 {
+			val = v[:10] + "..."
+		}
+		sb.WriteString(k)
+		sb.WriteString("=")
+		sb.WriteString(val)
+	}
+	return nil, sb.String()
 }
 
 // getWeight safely dereferences a *float64 weight pointer, returning 1.0 as default if nil.

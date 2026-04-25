@@ -79,15 +79,19 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
 					// Plan/act routing: "plan:MODEL_A||act:MODEL_B"
 					// Requests with tool_result blocks are in the act/execution phase; all others are plan/thinking.
+					logger.Debug("[Anthropic] Incoming model: %s", anthropicReq.Model)
 					if planModel, actModel, ok := parsePlanActModel(anthropicReq.Model); ok {
 						if hasToolResultBlocks(anthropicReq.Messages) {
 							anthropicReq.Model = actModel
+							logger.Info("[Anthropic] Routing to ACT model: %s", actModel)
 						} else {
 							anthropicReq.Model = planModel
+							logger.Info("[Anthropic] Routing to PLAN model: %s", planModel)
 						}
 					}
 					bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
 					normalizeBifrostInputContentBlocks(bifrostReq)
+					logger.Debug("[Anthropic] Final model: %s (provider: %s)", bifrostReq.Model, bifrostReq.Provider)
 					return &schemas.BifrostRequest{
 						ResponsesRequest: bifrostReq,
 					}, nil
