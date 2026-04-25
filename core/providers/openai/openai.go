@@ -181,7 +181,19 @@ func ListModelsByKey(
 	// Use enhanced response handler with pre-allocated response
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, openaiResponse, nil, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		// Some providers (e.g. Together AI) return a raw JSON array instead of
+		// the standard {"object":"list","data":[...]} envelope. Try that before giving up.
+		if len(responseBody) > 0 && responseBody[0] == '[' {
+			var models []OpenAIModel
+			if err := sonic.Unmarshal(responseBody, &models); err == nil {
+				openaiResponse.Data = models
+				bifrostErr = nil
+				rawRequest, rawResponse = nil, nil
+			}
+		}
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
 	}
 
 	response := openaiResponse.ToBifrostListModelsResponse(providerName, key.Models, key.BlacklistedModels, key.Aliases, unfiltered)
