@@ -1558,28 +1558,30 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 						contentBlock.Type = AnthropicContentBlockTypeText
 						contentBlock.Text = schemas.Ptr("")
 					case schemas.ResponsesMessageTypeReasoning:
-						// Non-Anthropic providers cannot supply a valid Anthropic signature or
-						// encrypted thinking blob.  Skip the entire content_block_start so that
-						// neither thinking nor redacted_thinking events reach the client.
+						// Non-Anthropic providers (Kimi K2.6, Qwen3.5, etc.) cannot supply a valid
+						// Anthropic signature for encrypted thinking.  Emit an empty thinking block
+						// so the Anthropic SDK can validate content ordering (thinking must precede
+						// tool_use).  Without this, the SDK errors with "reasoning_content missing
+						// in assistant tool call message" when tool calls follow.
 						if bifrostResp.ExtraFields.Provider != schemas.Anthropic {
-							if bifrostResp.OutputIndex != nil {
-								streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
-								if streamState.skippedOutputIndices == nil {
-									streamState.skippedOutputIndices = make(map[int]bool)
-								}
-								streamState.skippedOutputIndices[*bifrostResp.OutputIndex] = true
-							}
-							return nil
-						}
-						contentBlock.Type = AnthropicContentBlockTypeThinking
-						contentBlock.Thinking = schemas.Ptr("")
-						contentBlock.Signature = schemas.Ptr("")
-						// Preserve signature if present
-						if bifrostResp.Item.ResponsesReasoning != nil && bifrostResp.Item.ResponsesReasoning.EncryptedContent != nil && *bifrostResp.Item.ResponsesReasoning.EncryptedContent != "" {
-							contentBlock.Data = bifrostResp.Item.ResponsesReasoning.EncryptedContent
-							// When signature is present but thinking content is empty, use redacted_thinking
-							if contentBlock.Thinking != nil && *contentBlock.Thinking == "" {
+							contentBlock.Type = AnthropicContentBlockTypeThinking
+							contentBlock.Thinking = schemas.Ptr("")
+							contentBlock.Signature = schemas.Ptr("")
+							if bifrostResp.Item.ResponsesReasoning != nil && bifrostResp.Item.ResponsesReasoning.EncryptedContent != nil && *bifrostResp.Item.ResponsesReasoning.EncryptedContent != "" {
+								contentBlock.Data = bifrostResp.Item.ResponsesReasoning.EncryptedContent
 								contentBlock.Type = AnthropicContentBlockTypeRedactedThinking
+							}
+						} else {
+							contentBlock.Type = AnthropicContentBlockTypeThinking
+							contentBlock.Thinking = schemas.Ptr("")
+							contentBlock.Signature = schemas.Ptr("")
+							// Preserve signature if present
+							if bifrostResp.Item.ResponsesReasoning != nil && bifrostResp.Item.ResponsesReasoning.EncryptedContent != nil && *bifrostResp.Item.ResponsesReasoning.EncryptedContent != "" {
+								contentBlock.Data = bifrostResp.Item.ResponsesReasoning.EncryptedContent
+								// When signature is present but thinking content is empty, use redacted_thinking
+								if contentBlock.Thinking != nil && *contentBlock.Thinking == "" {
+									contentBlock.Type = AnthropicContentBlockTypeRedactedThinking
+								}
 							}
 						}
 					case schemas.ResponsesMessageTypeFunctionCall:

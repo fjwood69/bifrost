@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Switch the active custom model for the claude-jr Bifrost backend."""
 
+from datetime import datetime
 import json
 import sys
 import os
@@ -18,6 +19,9 @@ MODELS = [
     ("deepseek",      "nebius/deepseek-ai/DeepSeek-V3.2",               "DeepSeek V3.2",                    "66% Nebius / 34% Parasail / Vertex fallback via routing rule"),
     # DeepSeek V4 Flash (new)
     ("deepseek-v4-flash", "Deepinfra/deepseek-ai/DeepSeek-V4-Flash",    "DeepSeek V4 Flash (DeepInfra)",    "DeepSeek V4 Flash via Bifrost → DeepInfra"),
+    ("deepseek-v4-flash-n", "Novita/deepseek/deepseek-v4-flash",        "DeepSeek V4 Flash (Novita)",       "DeepSeek V4 Flash via Bifrost → Novita"),
+    # DeepSeek V4 Pro
+    ("deepseek-v4-pro",   "Deepinfra/deepseek-ai/DeepSeek-V4-Pro",      "DeepSeek V4 Pro (DeepInfra)",      "DeepSeek V4 Pro via Bifrost → DeepInfra (add provider key first)"),
     # Gemini
     ("gemini",        "gemini/gemini-3-flash-preview",                  "Gemini 3 Flash (Google)",          "1M ctx via Bifrost → Google"),
     # Gemma
@@ -27,9 +31,12 @@ MODELS = [
     ("glm5",          "vertex/zai-org/glm-5-maas",                      "GLM-5 (Vertex MaaS)",              "Zhipu GLM-5 via Bifrost → Vertex AI"),
     # Kimi
     ("kimi",          "Deepinfra/moonshotai/Kimi-K2.6",                 "Kimi K2.6",                        "80% DeepInfra / 20% Parasail via routing rule"),
+    ("kimi-nv",       "Novita/moonshotai/kimi-k2.6",                    "Kimi K2.6 (Novita)",               "Kimi K2.6 via Bifrost → Novita"),
+    ("kimi-moon",     "Moonshot/kimi-k2.6",                             "Kimi K2.6 (Moonshot native)",      "Kimi K2.6 direct via Moonshot AI API"),
     # MiniMax
     ("minimax",       "nebius/MiniMaxAI/MiniMax-M2.5",                  "MiniMax M2.5 (Nebius)",            "MiniMax via Bifrost → Nebius"),
     # Qwen
+    ("qwen3-235b",    "nebius/Qwen/Qwen3-235B-A22B-Instruct-2507",      "Qwen3-235B Instruct (Nebius)",     "235B MoE / 22B active — cheap + 45ms Finland; good for ACT"),
     ("qwen3-next",    "nebius/Qwen/Qwen3-Next-80B-A3B-Thinking",        "Qwen3-Next-80B Thinking (Nebius)", "Thinking MoE via Bifrost → Nebius"),
     ("qwen35",        "parasail/Qwen/Qwen3.5-35B-A3B-FP8",              "Qwen3.5-35B FP8 (Parasail)",       "Fast MoE via Bifrost → Parasail"),
 ]
@@ -117,6 +124,7 @@ def apply(model_id, display_name, desc, settings):
     settings["env"]["ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"] = desc
     settings["model"]                                             = model_id
     settings["availableModels"] = [mid for _, mid, _, _ in MODELS]
+    settings["_model_set_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     with open(PROFILE, "w") as f:
         json.dump(settings, f, indent=2)
@@ -204,6 +212,11 @@ def single_flow(settings, current_id):
             active = open(ACTIVE).read().strip() if os.path.exists(ACTIVE) else ""
             print(f"\n  ✓ Switched to {name}")
             if active == "claude-jr":
+                print("  Updating Bifrost VK and restarting container...", end="", flush=True)
+                if update_bifrost_vk_override(model_id):
+                    print(" done.\n")
+                else:
+                    print("\n  ⚠ Manual steps needed: update Bifrost VK description and restart container.\n")
                 print("  Applied to live config — reload VS Code.\n")
             else:
                 print("  Saved to profile — takes effect on next claude-jr.\n")
@@ -298,10 +311,13 @@ def main():
 
     current_id   = settings.get("env", {}).get("ANTHROPIC_CUSTOM_MODEL_OPTION", "")
     current_desc, is_plan_act = describe_current(current_id)
+    model_ts = settings.get("_model_set_at", "")
 
     print(f"\n  claude-jr model")
     hr()
     print(f"  Current: {current_desc}")
+    if model_ts:
+        print(f"  Set:     {model_ts}")
     hr()
     print()
     print("   1  Single model   — one model for all turns")
