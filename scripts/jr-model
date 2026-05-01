@@ -1,76 +1,103 @@
 #!/usr/bin/env python3
-"""Switch the active custom model for the claude-jr Bifrost backend."""
+"""Unified Claude Code profile + model switcher. Replaces switch-claude-profile.sh + jr-model.
+
+Usage:
+  jr-model                 Interactive TUI
+  jr-model status          Show profile + model only
+  jr-model claude-jr       Switch profile (non-interactive)
+  jr-model ds-v4-flash     Set model (non-interactive)
+"""
 
 from datetime import datetime
-import json
-import sys
-import os
-import tty
-import termios
+import json, os, sys, tty, termios, subprocess
 
-PROFILE      = os.path.expanduser("~/.claude-profiles/claude-jr/settings.json")
-ACTIVE       = os.path.expanduser("~/.claude-profiles/.active")
-BIFROST_DB        = "/data/bifrost/config.db"
-BIFROST_VK        = "claude-jr"
-BIFROST_VK_PASSTHROUGH = "claude-jr-passthrough"
+# ── Colours (like the PS1) ──────────────────────────────────────────────────────
+class C:
+    CYAN    = "\033[36m"
+    GREEN   = "\033[32m"
+    YELLOW  = "\033[33m"
+    RED     = "\033[31m"
+    MAGENTA = "\033[35m"
+    DARK    = "\033[90m"
+    BLUE    = "\033[34m"
+    BOLD    = "\033[1m"
+    RESET   = "\033[0m"
 
+def c(colour, text):
+    return f"{colour}{text}{C.RESET}"
+
+HOME          = os.path.expanduser("~")
+CLAUDE_DIR    = f"{HOME}/.claude"
+CLAUDE_JSON   = f"{HOME}/.claude.json"
+LIVE_SETTINGS = f"{CLAUDE_DIR}/settings.json"
+PROFILES_ROOT = f"{HOME}/.claude-profiles"
+ACTIVE_FILE   = f"{PROFILES_ROOT}/.active"
+JR_SETTINGS   = f"{PROFILES_ROOT}/claude-jr/settings.json"
+VSCODE_BASE   = f"{HOME}/.config/Code/User/profiles"
+BIFROST_DB    = "/data/bifrost/config.db"
+
+# ── Passthrough VK mapping (device key suffix → Bifrost VK name) ────────────
+PASSTHROUGH_VKS = {
+    "4ceCOQAA": "claude-sr-passthrough",    # Twiggy
+    "m4QAA":    "claude-sr-passthrough02",   # CB14P
+    "nc9GAAA":  "claude-sr-passthrough03",   # UX3405
+}
+
+# ── Model table (single entries — Bifrost handles multi-route) ────────────
 MODELS = [
-    # DeepSeek V3.2
-    ("deepseek",      "nebius/deepseek-ai/DeepSeek-V3.2",               "DeepSeek V3.2",                    "66% Nebius / 34% Parasail / Vertex fallback via routing rule"),
-    # DeepSeek V4 Flash (new)
-    ("deepseek-v4-flash", "Deepinfra/deepseek-ai/DeepSeek-V4-Flash",    "DeepSeek V4 Flash (DeepInfra)",    "DeepSeek V4 Flash via Bifrost → DeepInfra"),
-    ("deepseek-v4-flash-n", "Novita/deepseek/deepseek-v4-flash",        "DeepSeek V4 Flash (Novita)",       "DeepSeek V4 Flash via Bifrost → Novita"),
-    # DeepSeek V4 Pro
-    ("deepseek-v4-pro",   "Deepinfra/deepseek-ai/DeepSeek-V4-Pro",      "DeepSeek V4 Pro (DeepInfra)",      "DeepSeek V4 Pro via Bifrost → DeepInfra (add provider key first)"),
-    # Gemini
-    ("gemini",        "gemini/gemini-3-flash-preview",                  "Gemini 3 Flash (Google)",          "1M ctx via Bifrost → Google"),
-    # Gemma
-    ("gemma26b",      "parasail/google/gemma-4-26B-A4B-it",             "Gemma 4 26B A4B (Parasail)",       "Google MoE via Bifrost → Parasail"),
-    ("gemma26b-v",    "vertex/google/gemma-4-26b-a4b-it-maas",          "Gemma 4 26B A4B (Vertex MaaS)",    "Google MoE via Bifrost → Vertex AI"),
-    # GLM
-    ("glm5",          "vertex/zai-org/glm-5-maas",                      "GLM-5 (Vertex MaaS)",              "Zhipu GLM-5 via Bifrost → Vertex AI"),
-    # Kimi
-    ("kimi",          "Deepinfra/moonshotai/Kimi-K2.6",                 "Kimi K2.6",                        "80% DeepInfra / 20% Parasail via routing rule"),
-    ("kimi-nv",       "Novita/moonshotai/kimi-k2.6",                    "Kimi K2.6 (Novita)",               "Kimi K2.6 via Bifrost → Novita"),
-    ("kimi-moon",     "Moonshot/kimi-k2.6",                             "Kimi K2.6 (Moonshot native)",      "Kimi K2.6 direct via Moonshot AI API"),
-    # MiniMax
-    ("minimax",       "nebius/MiniMaxAI/MiniMax-M2.5",                  "MiniMax M2.5 (Nebius)",            "MiniMax via Bifrost → Nebius"),
-    # Qwen
-    ("qwen3-235b",    "nebius/Qwen/Qwen3-235B-A22B-Instruct-2507",      "Qwen3-235B Instruct (Nebius)",     "235B MoE / 22B active — cheap + 45ms Finland; good for ACT"),
-    ("qwen3-next",    "nebius/Qwen/Qwen3-Next-80B-A3B-Thinking",        "Qwen3-Next-80B Thinking (Nebius)", "Thinking MoE via Bifrost → Nebius"),
-    ("qwen35",        "parasail/Qwen/Qwen3.5-35B-A3B-FP8",              "Qwen3.5-35B FP8 (Parasail)",       "Fast MoE via Bifrost → Parasail"),
+    ("ds-v4-flash", "Novita/deepseek/deepseek-v4-flash",            "DeepSeek V4 Flash",  ""),
+    ("ds-v4-pro",   "Novita/deepseek/deepseek-v4-pro",              "DeepSeek V4 Pro",    ""),
+    ("ds-v3.2",     "nebius/deepseek-ai/DeepSeek-V3.2",             "DeepSeek V3.2",      ""),
+    ("kimi",        "Moonshot/kimi-k2.6",                           "Kimi K2.6",          ""),
+    ("glm51",       "Novita/zai-org/glm-5.1",                       "GLM 5.1",            ""),
+    ("gemma4",      "parasail/google/gemma-4-26B-A4B-it",           "Gemma 4 26B A4B it", ""),
+    ("gemini",      "gemini/gemini-3-flash-preview",                 "Gemini 3 Flash",     "1M ctx"),
+    ("nemotron",    "nebius/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", "Nemotron 3 Nano",    ""),
 ]
 
-# ── Bifrost VK helpers ────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
-def update_bifrost_vk_override(compound_model: str) -> bool:
-    """Write model_override to both Bifrost governance VKs and restart the container."""
-    import sqlite3, subprocess
+def json_field(path, field):
+    if not os.path.exists(path): return None
     try:
-        desc = json.dumps({"model_override": compound_model})
-        conn = sqlite3.connect(BIFROST_DB)
-        conn.execute(
-            "UPDATE governance_virtual_keys SET description = ? WHERE name = ?",
-            [desc, BIFROST_VK],
-        )
-        conn.execute(
-            "UPDATE governance_virtual_keys SET description = ? WHERE name = ?",
-            [desc, BIFROST_VK_PASSTHROUGH],
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"  Warning: could not update Bifrost DB: {e}")
-        return False
-    try:
-        subprocess.run(["podman", "restart", "bifrost"],
-                       check=True, capture_output=True, timeout=30)
-    except Exception as e:
-        print(f"  Warning: could not restart Bifrost container: {e}")
-        return False
-    return True
+        with open(path) as f: return json.load(f).get(field)
+    except: return None
 
-# ── Terminal helpers ───────────────────────────────────────────────────────────
+def nested_env_field(path, field):
+    if not os.path.exists(path): return None
+    try:
+        with open(path) as f: return json.load(f).get("env", {}).get(field)
+    except: return None
+
+def current_profile():
+    if os.path.exists(ACTIVE_FILE):
+        with open(ACTIVE_FILE) as f: return f.read().strip()
+    return None
+
+def current_model_id():
+    # Read from the profile settings file (where we write), fall back to live
+    if os.path.exists(JR_SETTINGS):
+        path = JR_SETTINGS
+    else:
+        path = LIVE_SETTINGS
+    val = nested_env_field(path, "ANTHROPIC_CUSTOM_MODEL_OPTION")
+    if not val: val = json_field(path, "ANTHROPIC_CUSTOM_MODEL_OPTION")
+    if not val: val = json_field(path, "model")
+    return val
+
+def model_info(model_id):
+    if not model_id: return None
+    for k, mid, name, notes in MODELS:
+        if mid == model_id: return (k, mid, name, notes)
+    for k, mid, name, notes in MODELS:
+        if k == model_id: return (k, mid, name, notes)
+    return None
+
+def key_suffix(key):
+    if not key or len(key) < 10: return None
+    return key[-7:]
+
+# ── Terminal ──────────────────────────────────────────────────────────────────
 
 def getch():
     fd = sys.stdin.fileno()
@@ -81,263 +108,457 @@ def getch():
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
-def hr(char="─", width=56):
-    print(f"  {char * width}")
+def input_line(prompt=""):
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    try:
+        return input().strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return ""
 
-# ── VS Code profile ────────────────────────────────────────────────────────────
+# ── Display ───────────────────────────────────────────────────────────────────
+
+def show_status():
+    cur = current_profile()
+    mid = current_model_id()
+    info = model_info(mid)
+
+    print(c(C.CYAN, "=== Claude Code Status ==="))
+    if cur:
+        print(f"  Profile: {c(C.GREEN, cur)}")
+        if mid:
+            if info:
+                print(f"  Model:   {c(C.CYAN, info[2])}")
+            else:
+                print(f"  Model:   {c(C.YELLOW, mid)}")
+
+            if mid and "||" in mid:
+                parts = mid.split("||")
+                plan = parts[0].replace("plan:", "") if "plan:" in parts[0] else ""
+                act = parts[1].replace("act:", "") if len(parts) > 1 and "act:" in parts[1] else ""
+                print(f"  Mode:    {c(C.MAGENTA, 'Plan/Act')}")
+                print(f"    PLAN: {c(C.BLUE, plan)}")
+                print(f"    ACT:  {c(C.MAGENTA, act)}")
+            else:
+                print(f"  Mode:    {c(C.DARK, 'Single model')}")
+
+        live_key = json_field(CLAUDE_JSON, "primaryApiKey")
+        if live_key:
+            suffix = key_suffix(live_key)
+            print(f"  Key:     {c(C.DARK, '...' + suffix)}")
+    else:
+        print(f"  {c(C.YELLOW, 'No active profile set.')}")
+    print(c(C.CYAN, "=" * 33))
+
+def show_status_banner():
+    cur = current_profile()
+    mid = current_model_id()
+    info = model_info(mid)
+    mode_str = c(C.MAGENTA, " [Plan/Act]") if mid and "||" in mid else ""
+    profile_str = c(C.GREEN, cur) if cur else c(C.YELLOW, "none")
+    model_str = c(C.CYAN, info[2]) + mode_str if info else (c(C.YELLOW, mid) + mode_str if mid else c(C.DARK, "(not set)"))
+    print(f"  Profile: {profile_str}")
+    print(f"  Model:   {model_str}")
+    print()
+
+# ── Profile Switching ──────────────────────────────────────────────────────────
 
 def find_vscode_profile():
-    cfg = os.path.expanduser("~/.claude-profiles/.vscode-profile-path")
+    cfg = f"{PROFILES_ROOT}/.vscode-profile-path"
     if os.path.exists(cfg):
-        return open(cfg).read().strip()
-    base = os.path.expanduser("~/.config/Code/User/profiles")
-    if not os.path.isdir(base):
-        return None
-    for name in os.listdir(base):
-        candidate = os.path.join(base, name, "settings.json")
+        with open(cfg) as f: return f.read().strip()
+    if not os.path.isdir(VSCODE_BASE): return None
+    for name in os.listdir(VSCODE_BASE):
+        candidate = os.path.join(VSCODE_BASE, name, "settings.json")
         if os.path.exists(candidate):
             try:
                 if "claudeCode" in open(candidate).read():
                     return candidate
-            except OSError:
-                pass
+            except: pass
     return None
 
 VSCODE_PROFILE = find_vscode_profile()
 
-def update_vscode_profile(env: dict):
-    if not VSCODE_PROFILE:
-        return
+def update_vscode_profile(env_block):
+    if not VSCODE_PROFILE or not os.path.exists(VSCODE_PROFILE): return
     try:
         vs = json.load(open(VSCODE_PROFILE))
-        vs["claudeCode.environmentVariables"] = [{"name": k, "value": v} for k, v in env.items()]
+        vs["claudeCode.environmentVariables"] = [{"name": k, "value": v} for k, v in env_block.items()]
         json.dump(vs, open(VSCODE_PROFILE, "w"), indent=4)
     except Exception as e:
-        print(f"  Warning: could not update VS Code profile: {e}")
+        print(f"  Warning: VS Code profile update failed: {e}")
 
-# ── Apply ──────────────────────────────────────────────────────────────────────
+def add_vscode_env_var(name, value):
+    if not VSCODE_PROFILE or not os.path.exists(VSCODE_PROFILE): return
+    try:
+        vs = json.load(open(VSCODE_PROFILE))
+        env_vars = vs.get("claudeCode.environmentVariables", [])
+        found = False
+        for v in env_vars:
+            if v["name"] == name:
+                v["value"] = value
+                found = True
+                break
+        if not found:
+            env_vars.append({"name": name, "value": value})
+        vs["claudeCode.environmentVariables"] = env_vars
+        json.dump(vs, open(VSCODE_PROFILE, "w"), indent=4)
+    except: pass
 
-def apply(model_id, display_name, desc, settings):
+def switch_profile(target):
+    target_dir = f"{PROFILES_ROOT}/{target}"
+    src_settings   = f"{target_dir}/settings.json"
+    src_claude_json = f"{target_dir}/claude.json"
+    src_creds      = f"{target_dir}/credentials.json"
+
+    if not os.path.exists(src_settings):
+        print(f"ERROR: Profile '{target}' not found at {target_dir}")
+        sys.exit(1)
+
+    # If leaving claude-sub, save OAuth tokens back
+    current = current_profile()
+    if current == "claude-sub":
+        live_creds = f"{CLAUDE_DIR}/.credentials.json"
+        if os.path.exists(live_creds):
+            subprocess.run(["cp", live_creds, f"{PROFILES_ROOT}/claude-sub/credentials.json"])
+        subprocess.run(["cp", f"{HOME}/.claude.json", f"{PROFILES_ROOT}/claude-sub/claude.json"])
+
+    print(c(C.CYAN, f"  -> Copying {target} profile..."))
+    subprocess.run(["cp", src_settings, f"{CLAUDE_DIR}/settings.json"])
+    if os.path.exists(src_claude_json):
+        subprocess.run(["cp", src_claude_json, CLAUDE_JSON])
+    if os.path.exists(src_creds):
+        subprocess.run(["cp", src_creds, f"{CLAUDE_DIR}/.credentials.json"])
+        os.chmod(f"{CLAUDE_DIR}/.credentials.json", 0o600)
+
+    with open(ACTIVE_FILE, "w") as f:
+        f.write(target)
+
+    # Update VS Code env vars
+    try:
+        target_settings = json.load(open(src_settings))
+        env_block = target_settings.get("env", {})
+        disable_prompt = target != "claude-sub"
+        if VSCODE_PROFILE and os.path.exists(VSCODE_PROFILE):
+            update_vscode_profile(env_block)
+            vs = json.load(open(VSCODE_PROFILE))
+            vs["claudeCode.disableLoginPrompt"] = disable_prompt
+            json.dump(vs, open(VSCODE_PROFILE, "w"), indent=4)
+    except Exception as e:
+        print(f"  Warning: profile env setup failed: {e}")
+
+    print(c(C.GREEN, f"  [OK] Switched to {target}"))
+
+# ── Cross-Profile Drift Detection ──────────────────────────────────────────────
+
+def check_drift():
+    live_key = json_field(CLAUDE_JSON, "primaryApiKey")
+    if not live_key: return
+
+    # Check claude-sub OAuth tokens
+    sub_dir = f"{PROFILES_ROOT}/claude-sub"
+    if os.path.exists(sub_dir):
+        live_sub_content = None
+        sub_content = None
+        live_creds = f"{CLAUDE_DIR}/.credentials.json"
+        sub_creds = f"{sub_dir}/credentials.json"
+        try:
+            with open(live_creds) as f: live_sub_content = f.read()
+        except: pass
+        try:
+            with open(sub_creds) as f: sub_content = f.read()
+        except: pass
+        if live_sub_content and live_sub_content != sub_content and live_sub_content != "{}":
+            subprocess.run(["cp", CLAUDE_JSON, f"{sub_dir}/claude.json"])
+            if live_sub_content:
+                subprocess.run(["cp", live_creds, sub_creds])
+            print("  -> claude-sub: OAuth tokens refreshed in golden config")
+
+    # Check claude-api key
+    api_dir = f"{PROFILES_ROOT}/claude-api"
+    if os.path.exists(api_dir):
+        api_golden = json_field(f"{api_dir}/claude.json", "primaryApiKey")
+        if live_key and api_golden and live_key != api_golden:
+            subprocess.run(["cp", CLAUDE_JSON, f"{api_dir}/claude.json"])
+            print("  -> claude-api: key updated in golden config")
+
+    # Check claude-jr passthrough key
+    jr_dir = f"{PROFILES_ROOT}/claude-jr"
+    if os.path.exists(jr_dir):
+        jr_golden = json_field(f"{jr_dir}/claude.json", "primaryApiKey")
+        if live_key and jr_golden and live_key != jr_golden:
+            subprocess.run(["cp", CLAUDE_JSON, f"{jr_dir}/claude.json"])
+            print("  -> claude-jr: key updated in golden config")
+
+def update_bifrost_passthrough_vk(vk_name, new_key):
+    print(f"  [!!] Real API key changed (passthrough VK: {vk_name})")
+    resp = input_line("       SSH to NUC and update?\n       [y/N]: ")
+    if resp.lower() != "y":
+        print("  -> Skipped Bifrost VK update. Passthrough auth may fail.")
+        return
+
+    print("  -> Updating Bifrost VK on NUC...")
+    escaped_key = new_key.replace("'", "''")
+    db_cmd = f"podman exec bifrost sqlite3 /app/data/config.db \"UPDATE governance_virtual_keys SET value='{escaped_key}' WHERE name='{vk_name}'\""
+    result = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+         "-i", os.path.expanduser("~/.ssh/id_ed25519_mcp"),
+         "nucadmin@100.84.128.79", db_cmd],
+        capture_output=True, text=True, timeout=15
+    )
+    if result.returncode == 0:
+        print("  [OK] Bifrost VK updated")
+        restart = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+             "-i", os.path.expanduser("~/.ssh/id_ed25519_mcp"),
+             "nucadmin@100.84.128.79", "podman restart bifrost"],
+            capture_output=True, text=True, timeout=30
+        )
+        if restart.returncode == 0:
+            print("  [OK] Bifrost restarted")
+        else:
+            print(f"  [!!] Bifrost restart failed: {restart.stderr.strip()}")
+    else:
+        print(f"  [!!] SSH failed: {result.stderr.strip()}")
+        print("       Golden config saved locally. Update Bifrost VK manually.")
+
+# ── Model Switching ────────────────────────────────────────────────────────────
+
+def set_model(model_value, model_key=None):
+    # Always write to the profile settings file
+    target_file = JR_SETTINGS
+    if not os.path.exists(JR_SETTINGS):
+        # Fall back to live if no profile dir yet (unusual)
+        target_file = LIVE_SETTINGS
+
+    if not os.path.exists(target_file):
+        print(f"ERROR: {target_file} not found")
+        return
+
+    with open(target_file) as f: settings = json.load(f)
+    settings["model"] = model_value
     settings.setdefault("env", {})
-    settings["env"]["ANTHROPIC_CUSTOM_MODEL_OPTION"]             = model_id
-    settings["env"]["ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"]        = display_name
-    settings["env"]["ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"] = desc
-    settings["model"]                                             = model_id
+    settings["env"]["ANTHROPIC_CUSTOM_MODEL_OPTION"] = model_value
+
+    if "||" not in model_value and model_key:
+        info = model_info(model_value)
+        if not info: info = model_info(model_key)
+        if info:
+            settings["env"]["ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"] = info[2]
+
     settings["availableModels"] = [mid for _, mid, _, _ in MODELS]
     settings["_model_set_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    with open(PROFILE, "w") as f:
+    with open(target_file, "w") as f:
         json.dump(settings, f, indent=2)
 
-    active = open(ACTIVE).read().strip() if os.path.exists(ACTIVE) else ""
+    # If claude-jr is active, propagate to live config
+    active = current_profile()
     if active == "claude-jr":
-        live = os.path.expanduser("~/.claude/settings.json")
-        with open(live, "w") as f:
+        with open(LIVE_SETTINGS, "w") as f:
             json.dump(settings, f, indent=2)
-        update_vscode_profile(settings["env"])
 
-# ── Current model description ──────────────────────────────────────────────────
+    # Update VS Code env var
+    if VSCODE_PROFILE:
+        add_vscode_env_var("ANTHROPIC_CUSTOM_MODEL_OPTION", model_value)
 
-def describe_current(model_id):
-    if "||" in model_id:
-        plan_id = act_id = ""
-        for part in model_id.split("||"):
-            kv = part.strip().split(":", 1)
-            if len(kv) == 2:
-                if kv[0].strip() == "plan": plan_id = kv[1].strip()
-                elif kv[0].strip() == "act":  act_id  = kv[1].strip()
-        plan_name = next((n for _, mid, n, _ in MODELS if mid == plan_id), plan_id or "?")
-        act_name  = next((n for _, mid, n, _ in MODELS if mid == act_id),  act_id  or "?")
-        return f"Plan: {plan_name}  /  Act: {act_name}", True
-    name = next((n for _, mid, n, _ in MODELS if mid == model_id), model_id)
-    return name, False
+    # Write model_override to both Bifrost VKs and restart
+    if active == "claude-jr":
+        try:
+            import sqlite3
+            desc = json.dumps({"model_override": model_value})
+            conn = sqlite3.connect(BIFROST_DB)
+            for vk in ["claude-jr", "claude-jr-passthrough"]:
+                conn.execute("UPDATE governance_virtual_keys SET description = ? WHERE name = ?", [desc, vk])
+            conn.commit()
+            conn.close()
+            subprocess.run(["podman", "restart", "bifrost"], check=True, capture_output=True, timeout=30)
+        except Exception as e:
+            print(f"  Warning: Bifrost VK update: {e}")
 
-# ── Model picker ───────────────────────────────────────────────────────────────
+    print("  [OK] Model set")
 
-def pick_model(step_label, subtitle, exclude_id=None):
-    """Show a numbered model list and return (model_id, name, desc) or None to go back."""
-    candidates = [(mid, name, desc) for _, mid, name, desc in MODELS if mid != exclude_id]
+# ── Interactive Menus ──────────────────────────────────────────────────────────
 
-    print(f"\n  ── {step_label} {'─' * max(0, 50 - len(step_label))}")
-    print(f"  {subtitle}\n")
-    for i, (_, name, desc) in enumerate(candidates, 1):
-        print(f"  {i:>2}  {name}")
-        print(f"      {desc}")
-    print(f"\n   0  Back / Cancel\n")
-    print("  Select: ", end="", flush=True)
+def profile_menu():
+    print(c(C.CYAN, "--- Select Profile ---"))
+    print("  1  claude-api    (Direct Anthropic API)")
+    print("  2  claude-sub    (Claude Pro / OAuth)")
+    print(f"  3  {c(C.MAGENTA, 'claude-jr')}     (Bifrost - third-party models)")
+    print(f"  4  {c(C.DARK, 'stay on current')} (enter model picker)")
+    print(f"  0  {c(C.DARK, 'exit')}")
+    print()
 
-    try:
-        ch = input().strip()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return None
+    ch = input_line("Select: ")
+    return {"1": "claude-api", "2": "claude-sub", "3": "claude-jr",
+            "4": "stay", "0": "exit"}.get(ch, "retry")
 
-    if ch in ("0", "q", ""):
-        return None
+def model_menu():
+    current_id = current_model_id()
+    current_info = model_info(current_id)
+    current_name = current_info[2] if current_info else (current_id or "(not set)")
+
+    print(c(C.CYAN, "--- Model Selection (claude-jr) ---"))
+    print(f"  Current: {c(C.GREEN, current_name)}")
+    print()
+    print("  1  Single model")
+    print(f"  2  {c(C.MAGENTA, 'Plan/Act pair')}")
+    print(f"  0  {c(C.DARK, 'Keep current / exit')}")
+    print()
+
+    mode = input_line("Select mode: ")
+    if mode == "1":
+        model_key = model_picker("Select model")
+        if model_key in (None, "back"):
+            return False
+        info = None
+        for k, mid, name, notes in MODELS:
+            if k == model_key: info = (k, mid, name, notes); break
+        if info:
+            print(f"Switching to {info[2]}...")
+            set_model(info[1], info[0])
+            print("Done.")
+            print("Reload VS Code window (Ctrl+Shift+P -> Reload Window)")
+            return True
+    elif mode == "2":
+        return plan_act_flow()
+    return False
+
+def model_picker(title):
+    print(c(C.CYAN, f"--- {title} ---"))
+    for i, (_, _, name, notes) in enumerate(MODELS, 1):
+        note_str = c(C.DARK, f"  - {notes}") if notes else ""
+        print(f"  {i}  {name}{note_str}")
+    print(f"  0  {c(C.DARK, 'Cancel')}")
+    print()
+
+    ch = input_line("Select model: ")
+    if ch == "0": return None
     try:
         idx = int(ch) - 1
-        if 0 <= idx < len(candidates):
-            return candidates[idx]
+        if 0 <= idx < len(MODELS):
+            return MODELS[idx][0]
     except ValueError:
         pass
-    print("  Invalid choice.")
-    return None
+    print("Invalid choice.")
+    return model_picker(title)
 
-# ── Single model flow ──────────────────────────────────────────────────────────
+def plan_act_flow():
+    print(c(C.CYAN, "--- Plan/Act Mode ---"))
+    print(f"  {c(C.BLUE, 'First, pick the PLAN model (strong reasoning)')}")
 
-def single_flow(settings, current_id):
-    candidates = [(mid, name, desc) for _, mid, name, desc in MODELS if mid != current_id]
+    plan_key = model_picker("Select PLAN model")
+    if plan_key in (None, "back"): return False
 
-    print(f"\n  ── Choose model {'─' * 40}")
-    for i, (_, name, desc) in enumerate(candidates, 1):
-        print(f"  {i:>2}  {name}")
-        print(f"      {desc}")
-    print(f"\n   0  Cancel\n")
-    print("  Select: ", end="", flush=True)
+    plan_info = None
+    for k, mid, name, notes in MODELS:
+        if k == plan_key: plan_info = (k, mid, name, notes); break
 
-    try:
-        ch = input().strip()
-    except (EOFError, KeyboardInterrupt):
-        print("\n  No change.\n")
+    print(f"  {c(C.MAGENTA, 'Now pick the ACT model (fast executor)')}")
+
+    act_key = model_picker("Select ACT model")
+    if act_key in (None, "back"): return False
+
+    act_info = None
+    for k, mid, name, notes in MODELS:
+        if k == act_key: act_info = (k, mid, name, notes); break
+
+    if not plan_info or not act_info:
+        print(c(C.RED, "Error: model not found"))
+        return False
+
+    compound = f"plan:{plan_info[1]}||act:{act_info[1]}"
+
+    print()
+    print(c(C.CYAN, "Plan/Act pair:"))
+    print(f"  {c(C.BLUE, 'PLAN:')} {plan_info[2]}")
+    print(f"  {c(C.MAGENTA, 'ACT:')}  {act_info[2]}")
+
+    confirm = input_line("Apply? [Y/n]: ")
+    if confirm.lower() == "n":
+        print(c(C.YELLOW, "Cancelled."))
+        return False
+
+    set_model(compound)
+    print(c(C.MAGENTA, "Done."))
+    print(c(C.MAGENTA, "Reload VS Code window (Ctrl+Shift+P -> Reload Window)"))
+    return True
+
+# ── Non-Interactive Dispatch ────────────────────────────────────────────────────
+
+def handle_noninteractive(arg):
+    profiles = ["claude-api", "claude-sub", "claude-jr"]
+    if arg in profiles:
+        current = current_profile()
+        if current == arg:
+            print(f"Already on '{arg}' profile.")
+            return
+        switch_profile(arg)
+        check_drift()
+        print()
+        print("Reload VS Code window (Ctrl+Shift+P -> Reload Window)")
         return
 
-    if ch in ("0", "q", ""):
-        print("  No change.\n")
-        return
-    try:
-        idx = int(ch) - 1
-        if 0 <= idx < len(candidates):
-            model_id, name, desc = candidates[idx]
-            apply(model_id, name, desc, settings)
-            active = open(ACTIVE).read().strip() if os.path.exists(ACTIVE) else ""
-            print(f"\n  ✓ Switched to {name}")
-            if active == "claude-jr":
-                print("  Updating Bifrost VK and restarting container...", end="", flush=True)
-                if update_bifrost_vk_override(model_id):
-                    print(" done.\n")
-                else:
-                    print("\n  ⚠ Manual steps needed: update Bifrost VK description and restart container.\n")
-                print("  Applied to live config — reload VS Code.\n")
-            else:
-                print("  Saved to profile — takes effect on next claude-jr.\n")
-        else:
-            print("  Invalid choice.\n")
-    except ValueError:
-        print("  Invalid choice.\n")
-
-# ── Plan/Act flow ──────────────────────────────────────────────────────────────
-
-def plan_act_flow(settings):
-    while True:
-        # Step 1: Plan model
-        result = pick_model(
-            "Step 1 of 2 — Plan model",
-            "Used for planning turns (last message has no tool results)"
-        )
-        if result is None:
-            print("  No change.\n")
+    for k, mid, _, _ in MODELS:
+        if k == arg:
+            set_model(mid, k)
+            print()
+            print("Reload VS Code window (Ctrl+Shift+P -> Reload Window)")
             return
 
-        plan_id, plan_name, _ = result
+    print(f"Unknown action: {arg}")
+    print("Usage: jr-model [claude-jr|claude-api|claude-sub|status|<model-key>]")
+    sys.exit(1)
 
-        while True:
-            # Step 2: Act model
-            result = pick_model(
-                "Step 2 of 2 — Act model",
-                "Used for execution turns (last message has tool results)",
-                exclude_id=None  # allow same model for plan and act
-            )
-            if result is None:
-                break  # back to Step 1
-
-            act_id, act_name, _ = result
-
-            # Step 3: Confirm
-            print(f"\n  ── Confirm {'─' * 46}")
-            print(f"  Plan:  {plan_name}")
-            print(f"  Act:   {act_name}")
-            print(f"\n  c  Confirm  |  r  Re-pick from Step 1  |  q  Cancel\n")
-            print("  Select [c/r/q]: ", end="", flush=True)
-
-            try:
-                ch = getch()
-                print(ch)
-            except (EOFError, KeyboardInterrupt):
-                print("\n  No change.\n")
-                return
-
-            if ch in ("c", "\r", "\n", " "):
-                compound      = f"plan:{plan_id}||act:{act_id}"
-                display_name  = f"Plan: {plan_name} / Act: {act_name}"
-                desc          = f"Plan → {plan_name}; Act → {act_name}"
-                apply(compound, display_name, desc, settings)
-                active = open(ACTIVE).read().strip() if os.path.exists(ACTIVE) else ""
-                print(f"\n  ✓ Set Plan: {plan_name}")
-                print(f"         Act:  {act_name}")
-                if active == "claude-jr":
-                    print("  Applied to live config — reload VS Code.\n")
-                else:
-                    print("  Saved to profile — takes effect on next claude-jr.\n")
-                print("  Updating Bifrost VK and restarting container...", end="", flush=True)
-                if update_bifrost_vk_override(compound):
-                    print(" done.\n")
-                else:
-                    print("\n  ⚠ Manual steps needed: update Bifrost VK description and restart container.\n")
-                return
-
-            elif ch in ("r",):
-                break  # break inner loop → back to Step 1
-
-            elif ch in ("q", "\x03", "\x1b", "0"):
-                print("  No change.\n")
-                return
-
-            else:
-                print("  Invalid — press c, r, or q.")
-                continue
-
-        # inner loop exited with break → re-run Step 1
-        if result is not None:
-            # came from 'r' at confirm — restart
-            continue
-        # came from '0' at Step 2 — restart Step 1
-        continue
-
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
-    with open(PROFILE) as f:
-        settings = json.load(f)
+    arg = sys.argv[1] if len(sys.argv) > 1 else ""
 
-    current_id   = settings.get("env", {}).get("ANTHROPIC_CUSTOM_MODEL_OPTION", "")
-    current_desc, is_plan_act = describe_current(current_id)
-    model_ts = settings.get("_model_set_at", "")
-
-    print(f"\n  claude-jr model")
-    hr()
-    print(f"  Current: {current_desc}")
-    if model_ts:
-        print(f"  Set:     {model_ts}")
-    hr()
+    os.system("clear")
+    print(c(C.CYAN, "=== Claude Code Switcher ==="))
     print()
-    print("   1  Single model   — one model for all turns")
-    print("   2  Plan / Act     — separate models for planning and execution")
-    print()
-    print("   0  Exit unchanged")
-    print()
-    print("  Select [0-2]: ", end="", flush=True)
+    show_status_banner()
 
-    ch = getch()
-    print(ch)
+    if arg:
+        if arg == "status":
+            show_status()
+            return
+        handle_noninteractive(arg)
+        return
 
-    if ch in ("0", "q", "\x03", "\x1b", ""):
-        print("  No change.\n")
-    elif ch == "1":
-        single_flow(settings, current_id)
-    elif ch == "2":
-        plan_act_flow(settings)
-    else:
-        print("  Invalid choice.\n")
+    while True:
+        choice = profile_menu()
+        do_model_menu = False
+
+        if choice == "exit":
+            print("Bye!")
+            return
+        elif choice == "retry":
+            continue
+        elif choice == "stay":
+            print("Staying on current profile.")
+            check_drift()
+            do_model_menu = True
+        else:
+            current = current_profile()
+            if current != choice:
+                switch_profile(choice)
+            else:
+                print(f"Already on '{choice}'.")
+            check_drift()
+            do_model_menu = (choice == "claude-jr")
+            if not do_model_menu:
+                print()
+                print("Reload VS Code window (Ctrl+Shift+P -> Reload Window)")
+
+        if do_model_menu:
+            applied = model_menu()
+            if not applied:
+                print("No changes made.")
+
+        break
 
 if __name__ == "__main__":
     main()
