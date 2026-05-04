@@ -1839,15 +1839,12 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		}
 		if bifrostReq.Params.Text != nil {
 			if bifrostReq.Params.Text.Format != nil {
-				responseFormatTool, anthropicOutputFormat := convertTextFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params.Text)
-				if anthropicOutputFormat != nil {
-					if bedrockReq.AdditionalModelRequestFields == nil {
-						bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
-					}
-					setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "format", anthropicOutputFormat)
-				}
-				// Defer synthetic tool injection until after normal tool/tool_choice conversion
-				// so the structured-output tool is not overwritten by the later pass.
+				// Bedrock structured output goes through the synthetic `bf_so_*`
+				// tool path for all models, including Anthropic. We capture the
+				// tool here and defer injection until after normal tool/tool_choice
+				// conversion so the forced structured-output tool choice is not
+				// overwritten.
+				responseFormatTool, _ := convertTextFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params.Text)
 				if responseFormatTool != nil {
 					responsesStructuredOutputTool = responseFormatTool
 				}
@@ -1962,6 +1959,17 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	// Convert tool choice
 	if bifrostReq.Params != nil && bifrostReq.Params.ToolChoice != nil {
 		bedrockToolChoice := convertResponsesToolChoice(*bifrostReq.Params.ToolChoice)
+		// Per-model gate: Bedrock Converse rejects toolConfig.toolChoice.tool
+		// on Meta Llama variants ("This model doesn't support the
+		// toolConfig.toolChoice.tool field"). Drop the forced specific-tool
+		// pin on Llama; the bound tool list is unaffected so the model can
+		// still call the intended tool under Bedrock's default "auto"
+		// behavior. See per-model support matrix at
+		// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html
+		// (mirrors the gate in convertToolConfigFromFiltered for ChatCompletions).
+		if bedrockToolChoice != nil && bedrockToolChoice.Tool != nil && schemas.IsLlamaModel(bifrostReq.Model) {
+			bedrockToolChoice = nil
+		}
 		if bedrockToolChoice != nil {
 			if bedrockReq.ToolConfig == nil {
 				bedrockReq.ToolConfig = &BedrockToolConfig{}
@@ -1977,10 +1985,21 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			bedrockReq.ToolConfig = &BedrockToolConfig{}
 		}
 		bedrockReq.ToolConfig.Tools = append([]BedrockTool{*responsesStructuredOutputTool}, bedrockReq.ToolConfig.Tools...)
-		bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
-			Tool: &BedrockToolChoiceTool{
-				Name: responsesStructuredOutputTool.ToolSpec.Name,
-			},
+		// Force the model to use this specific tool, EXCEPT on Meta Llama where
+		// Bedrock Converse rejects toolConfig.toolChoice.tool with HTTP 400
+		// ("This model doesn't support the toolConfig.toolChoice.tool field").
+		// With only the synthetic bf_so_* tool bound, omitting tool_choice
+		// (Bedrock default = "auto") yields the same outcome on Llama because
+		// there's exactly one tool the model can call. See the per-model
+		// support matrix at
+		// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html
+		// (mirrors the gate applied in convertChatParameters).
+		if !schemas.IsLlamaModel(bifrostReq.Model) {
+			bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
+				Tool: &BedrockToolChoiceTool{
+					Name: responsesStructuredOutputTool.ToolSpec.Name,
+				},
+			}
 		}
 	}
 
@@ -2027,6 +2046,19 @@ func (response *BedrockConverseResponse) ToBifrostResponsesResponse(ctx *schemas
 				bifrostResp.Usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 			}
 			bifrostResp.Usage.InputTokensDetails.CachedWriteTokens = response.Usage.CacheWriteInputTokens
+			if response.Usage.CacheDetails != nil {
+				if bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails == nil {
+					bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{}
+				}
+				for _, cacheDetail := range *response.Usage.CacheDetails {
+					if cacheDetail.TTL == BedrockCacheWriteTTL5m {
+						bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m = cacheDetail.InputTokens
+					}
+					if cacheDetail.TTL == BedrockCacheWriteTTL1h {
+						bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h = cacheDetail.InputTokens
+					}
+				}
+			}
 			bifrostResp.Usage.InputTokens = bifrostResp.Usage.InputTokens + response.Usage.CacheWriteInputTokens
 		}
 	}
@@ -2102,6 +2134,22 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 			}
 			if bifrostResp.Usage.InputTokensDetails.CachedWriteTokens > 0 {
 				bedrockResp.Usage.CacheWriteInputTokens = bifrostResp.Usage.InputTokensDetails.CachedWriteTokens
+				if bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails != nil {
+					var cacheDetails []BedrockCacheWriteDetails
+					if bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m > 0 {
+						cacheDetails = append(cacheDetails, BedrockCacheWriteDetails{
+							InputTokens: bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens5m,
+							TTL:         BedrockCacheWriteTTL5m,
+						})
+					}
+					if bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h > 0 {
+						cacheDetails = append(cacheDetails, BedrockCacheWriteDetails{
+							InputTokens: bifrostResp.Usage.InputTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h,
+							TTL:         BedrockCacheWriteTTL1h,
+						})
+					}
+					bedrockResp.Usage.CacheDetails = &cacheDetails
+				}
 				bedrockResp.Usage.InputTokens = bedrockResp.Usage.InputTokens - bifrostResp.Usage.InputTokensDetails.CachedWriteTokens
 			}
 		}
