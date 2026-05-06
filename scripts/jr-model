@@ -31,10 +31,16 @@ CLAUDE_DIR    = f"{HOME}/.claude"
 CLAUDE_JSON   = f"{HOME}/.claude.json"
 LIVE_SETTINGS = f"{CLAUDE_DIR}/settings.json"
 PROFILES_ROOT = f"{HOME}/.claude-profiles"
+
+# Isolated config dirs for non-sub profiles (prevents OAuth contamination)
+CONFIG_DIRS = {
+    "claude-api": f"{HOME}/.claude-api",
+    "claude-jr":  f"{HOME}/.claude-jr",
+}
 ACTIVE_FILE   = f"{PROFILES_ROOT}/.active"
 JR_SETTINGS   = f"{PROFILES_ROOT}/claude-jr/settings.json"
 VSCODE_BASE   = f"{HOME}/.config/Code/User/profiles"
-BIFROST_DB    = "/data/bifrost/config.db"
+BIFROST_API   = ("localhost", 8787)
 
 # ── Passthrough VK mapping (device key suffix → Bifrost VK name) ────────────
 PASSTHROUGH_VKS = {
@@ -165,9 +171,9 @@ def show_status_banner():
 # ── Profile Switching ──────────────────────────────────────────────────────────
 
 def find_vscode_profile():
-    cfg = f"{PROFILES_ROOT}/.vscode-profile-path"
-    if os.path.exists(cfg):
-        with open(cfg) as f: return f.read().strip()
+    """Find the VS Code profile settings.json that's actually in use.
+    fatrace confirms VS Code reads from profiles/*/settings.json, not
+    the default ~/.config/Code/User/settings.json."""
     if not os.path.isdir(VSCODE_BASE): return None
     for name in os.listdir(VSCODE_BASE):
         candidate = os.path.join(VSCODE_BASE, name, "settings.json")
@@ -204,7 +210,8 @@ def add_vscode_env_var(name, value):
             env_vars.append({"name": name, "value": value})
         vs["claudeCode.environmentVariables"] = env_vars
         json.dump(vs, open(VSCODE_PROFILE, "w"), indent=4)
-    except: pass
+    except Exception as e:
+        print(f"  Warning: VS Code env var update failed: {e}")
 
 def switch_profile(target):
     target_dir = f"{PROFILES_ROOT}/{target}"
@@ -224,13 +231,38 @@ def switch_profile(target):
             subprocess.run(["cp", live_creds, f"{PROFILES_ROOT}/claude-sub/credentials.json"])
         subprocess.run(["cp", f"{HOME}/.claude.json", f"{PROFILES_ROOT}/claude-sub/claude.json"])
 
+    # Resolve config dir early — needed for file copy destinations
+    config_dir = CONFIG_DIRS.get(target, CLAUDE_DIR)
+    os.makedirs(config_dir, exist_ok=True)
+
     print(c(C.CYAN, f"  -> Copying {target} profile..."))
-    subprocess.run(["cp", src_settings, f"{CLAUDE_DIR}/settings.json"])
+    # Settings go to the isolated config dir (CLAUDE_CONFIG_DIR), not always ~/.claude/
+    subprocess.run(["cp", src_settings, f"{config_dir}/settings.json"])
     if os.path.exists(src_claude_json):
         subprocess.run(["cp", src_claude_json, CLAUDE_JSON])
+        # Also merge primaryApiKey into the isolated .claude.json so the CC extension
+        # finds auth when CLAUDE_CONFIG_DIR redirects away from ~/.claude.json
+        if config_dir != CLAUDE_DIR:
+            isolated_dot_claude = f"{config_dir}/.claude.json"
+            try:
+                primary_key = json.load(open(src_claude_json)).get("primaryApiKey")
+                if primary_key:
+                    existing = {}
+                    if os.path.exists(isolated_dot_claude):
+                        try:
+                            existing = json.load(open(isolated_dot_claude))
+                        except Exception:
+                            pass
+                    existing["primaryApiKey"] = primary_key
+                    with open(isolated_dot_claude, "w") as f:
+                        json.dump(existing, f, indent=2)
+            except Exception as e:
+                print(f"  Warning: could not update isolated .claude.json: {e}")
     if os.path.exists(src_creds):
-        subprocess.run(["cp", src_creds, f"{CLAUDE_DIR}/.credentials.json"])
-        os.chmod(f"{CLAUDE_DIR}/.credentials.json", 0o600)
+        # Credentials go to the isolated config dir — never overwrite ~/.claude/.credentials.json
+        # (that holds the claude-sub OAuth tokens we saved above)
+        subprocess.run(["cp", src_creds, f"{config_dir}/.credentials.json"])
+        os.chmod(f"{config_dir}/.credentials.json", 0o600)
 
     with open(ACTIVE_FILE, "w") as f:
         f.write(target)
@@ -238,7 +270,18 @@ def switch_profile(target):
     # Update VS Code env vars
     try:
         target_settings = json.load(open(src_settings))
-        env_block = target_settings.get("env", {})
+        env_block = dict(target_settings.get("env", {}))
+
+        # Inject CLAUDE_CONFIG_DIR for isolated profiles (prevents OAuth contamination)
+        if config_dir != CLAUDE_DIR:
+            env_block["CLAUDE_CONFIG_DIR"] = config_dir
+
+        # Null out vars that leak from inherited shell env when switching away
+        # from claude-jr. Empty strings tell VS Code to override the inherited value.
+        if target != "claude-jr":
+            env_block.setdefault("ANTHROPIC_BASE_URL", "")
+            env_block.setdefault("ANTHROPIC_AUTH_TOKEN", "")
+
         disable_prompt = target != "claude-sub"
         if VSCODE_PROFILE and os.path.exists(VSCODE_PROFILE):
             update_vscode_profile(env_block)
@@ -323,6 +366,78 @@ def update_bifrost_passthrough_vk(vk_name, new_key):
         print(f"  [!!] SSH failed: {result.stderr.strip()}")
         print("       Golden config saved locally. Update Bifrost VK manually.")
 
+# ── Bifrost VK Update (via admin API — live-reloads in-memory store, no restart) ──
+
+def _bifrost_update_vk_descriptions(model_value):
+    import http.client as _http
+
+    secrets = {}
+    try:
+        with open(os.path.expanduser("~/.claude/.secrets")) as f:
+            for line in f:
+                k, _, v = line.strip().partition("=")
+                if k:
+                    secrets[k] = v
+    except Exception as e:
+        print(f"  Warning: cannot read .secrets for Bifrost auth: {e}")
+        return False
+
+    user = secrets.get("BIFROST_ADMIN_USER")
+    pw   = secrets.get("BIFROST_ADMIN_PASSWORD")
+    if not user or not pw:
+        print("  Warning: BIFROST_ADMIN_USER/PASSWORD not in .secrets")
+        return False
+
+    try:
+        conn = _http.HTTPConnection(*BIFROST_API, timeout=10)
+
+        # Login → session cookie
+        body = json.dumps({"username": user, "password": pw}).encode()
+        conn.request("POST", "/api/session/login", body, {"Content-Type": "application/json"})
+        resp = conn.getresponse(); resp.read()
+        if resp.status != 200:
+            print(f"  Warning: Bifrost login failed (HTTP {resp.status})")
+            return False
+        cookie = next((v.split(";")[0] for h, v in resp.getheaders() if h.lower() == "set-cookie"), None)
+        if not cookie:
+            print("  Warning: Bifrost login returned no session cookie")
+            return False
+
+        headers = {"Cookie": cookie}
+
+        # Fetch VK list → find claude-jr and claude-jr-passthrough IDs
+        conn.request("GET", "/api/governance/virtual-keys", headers=headers)
+        resp = conn.getresponse()
+        data = json.loads(resp.read())
+        if resp.status != 200:
+            print(f"  Warning: Bifrost VK list failed (HTTP {resp.status})")
+            return False
+        target_names = {"claude-jr", "claude-jr-passthrough"}
+        targets = {vk["id"]: vk["name"] for vk in data.get("virtual_keys", []) if vk.get("name") in target_names}
+        if not targets:
+            print("  Warning: claude-jr VKs not found in Bifrost — check VK names")
+            return False
+
+        # PUT description on each VK — Bifrost calls ReloadVirtualKey internally
+        desc = json.dumps({"model_override": model_value})
+        put_body = json.dumps({"description": desc}).encode()
+        put_headers = {**headers, "Content-Type": "application/json"}
+        ok = 0
+        for vk_id, vk_name in targets.items():
+            conn.request("PUT", f"/api/governance/virtual-keys/{vk_id}", put_body, put_headers)
+            resp = conn.getresponse(); resp.read()
+            if resp.status == 200:
+                ok += 1
+            else:
+                print(f"  Warning: VK update failed for {vk_name} (HTTP {resp.status})")
+
+        conn.close()
+        return ok == len(targets)
+
+    except Exception as e:
+        print(f"  Warning: Bifrost VK update error: {e}")
+        return False
+
 # ── Model Switching ────────────────────────────────────────────────────────────
 
 def set_model(model_value, model_key=None):
@@ -353,29 +468,24 @@ def set_model(model_value, model_key=None):
     with open(target_file, "w") as f:
         json.dump(settings, f, indent=2)
 
-    # If claude-jr is active, propagate to live config
+    # Propagate to live config (CLAUDE_CONFIG_DIR) so CC sidebar shows correct model
     active = current_profile()
-    if active == "claude-jr":
-        with open(LIVE_SETTINGS, "w") as f:
-            json.dump(settings, f, indent=2)
+    if active:
+        live_dir = CONFIG_DIRS.get(active, CLAUDE_DIR)
+        live_settings = f"{live_dir}/settings.json"
+        if active == "claude-jr":
+            with open(live_settings, "w") as f:
+                json.dump(settings, f, indent=2)
 
     # Update VS Code env var
     if VSCODE_PROFILE:
         add_vscode_env_var("ANTHROPIC_CUSTOM_MODEL_OPTION", model_value)
 
-    # Write model_override to both Bifrost VKs and restart
+    # Update Bifrost VK model_override via admin API (live-reloads in-memory store, no restart)
     if active == "claude-jr":
-        try:
-            import sqlite3
-            desc = json.dumps({"model_override": model_value})
-            conn = sqlite3.connect(BIFROST_DB)
-            for vk in ["claude-jr", "claude-jr-passthrough"]:
-                conn.execute("UPDATE governance_virtual_keys SET description = ? WHERE name = ?", [desc, vk])
-            conn.commit()
-            conn.close()
-            subprocess.run(["podman", "restart", "bifrost"], check=True, capture_output=True, timeout=30)
-        except Exception as e:
-            print(f"  Warning: Bifrost VK update: {e}")
+        ok = _bifrost_update_vk_descriptions(model_value)
+        if not ok:
+            print("  Warning: Bifrost VK update incomplete — model routing may be stale")
 
     print("  [OK] Model set")
 
@@ -383,15 +493,15 @@ def set_model(model_value, model_key=None):
 
 def profile_menu():
     print(c(C.CYAN, "--- Select Profile ---"))
-    print("  1  claude-api    (Direct Anthropic API)")
+    print(f"  1  {c(C.MAGENTA, 'claude-jr')}     (Bifrost - third-party models)")
     print("  2  claude-sub    (Claude Pro / OAuth)")
-    print(f"  3  {c(C.MAGENTA, 'claude-jr')}     (Bifrost - third-party models)")
+    print("  3  claude-api    (Direct Anthropic API)")
     print(f"  4  {c(C.DARK, 'stay on current')} (enter model picker)")
     print(f"  0  {c(C.DARK, 'exit')}")
     print()
 
     ch = input_line("Select: ")
-    return {"1": "claude-api", "2": "claude-sub", "3": "claude-jr",
+    return {"1": "claude-jr", "2": "claude-sub", "3": "claude-api",
             "4": "stay", "0": "exit"}.get(ch, "retry")
 
 def model_menu():
@@ -488,7 +598,7 @@ def plan_act_flow():
 # ── Non-Interactive Dispatch ────────────────────────────────────────────────────
 
 def handle_noninteractive(arg):
-    profiles = ["claude-api", "claude-sub", "claude-jr"]
+    profiles = ["claude-jr", "claude-sub", "claude-api"]
     if arg in profiles:
         current = current_profile()
         if current == arg:
