@@ -72,7 +72,10 @@
   # musl: C standard library (required for CGO binaries)
   # libgcc: GCC runtime library
   # ca-certificates: For HTTPS connections
-  RUN apk add --no-cache musl libgcc ca-certificates wget zlib=1.3.2-r0
+  # nodejs npm: For MCP stdio servers (e.g. mcp-ssh-manager)
+  # openssh-client: SSH access for remote server management
+  RUN apk add --no-cache musl libgcc ca-certificates wget zlib=1.3.2-r0 nodejs npm openssh-client && \
+      npm install -g mcp-ssh-manager@3.2.2
 
   # Create data directory and set up user
   COPY --from=builder /app/main .
