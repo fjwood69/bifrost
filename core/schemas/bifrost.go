@@ -141,6 +141,11 @@ const (
 	FileListRequest              RequestType = "file_list"
 	FileRetrieveRequest          RequestType = "file_retrieve"
 	FileDeleteRequest            RequestType = "file_delete"
+	CachedContentCreateRequest   RequestType = "cached_content_create"
+	CachedContentListRequest     RequestType = "cached_content_list"
+	CachedContentRetrieveRequest RequestType = "cached_content_retrieve"
+	CachedContentUpdateRequest   RequestType = "cached_content_update"
+	CachedContentDeleteRequest   RequestType = "cached_content_delete"
 	FileContentRequest           RequestType = "file_content"
 	ContainerCreateRequest       RequestType = "container_create"
 	ContainerListRequest         RequestType = "container_list"
@@ -173,7 +178,6 @@ const (
 	BifrostContextKeyAPIKeyID          BifrostContextKey = "x-bf-api-key-id"       // string (explicit key ID selection, takes priority over name)
 	BifrostContextKeyRequestID         BifrostContextKey = "request-id"            // string
 	BifrostContextKeyFallbackRequestID BifrostContextKey = "fallback-request-id"   // string
-	BifrostContextKeyDirectKey         BifrostContextKey = "bifrost-direct-key"    // Key struct
 
 	// NOTE: []string is used for both keys, and by default all clients/tools are included (when nil).
 	// If "*" is present, all clients/tools are included, and [] means no clients/tools are included.
@@ -264,7 +268,7 @@ const (
 	BifrostContextKeyTargetUserID                        BifrostContextKey = "target_user_id"
 	BifrostContextKeyIsAzureUserAgent                    BifrostContextKey = "bifrost-is-azure-user-agent" // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an Azure user agent (only used in gateway)
 	BifrostContextKeyVideoOutputRequested                BifrostContextKey = "bifrost-video-output-requested"
-BifrostContextKeyValidateKeys                        BifrostContextKey = "bifrost-validate-keys"                         // bool (triggers additional key validation during provider add/update)
+	BifrostContextKeyValidateKeys                        BifrostContextKey = "bifrost-validate-keys"                         // bool (triggers additional key validation during provider add/update)
 	BifrostContextKeyProviderResponseHeaders             BifrostContextKey = "bifrost-provider-response-headers"             // map[string]string (set by provider handlers for response header forwarding)
 	BifrostContextKeyMCPAddedTools                       BifrostContextKey = "bifrost-mcp-added-tools"                       // []string (set by bifrost - DO NOT SET THIS MANUALLY)) - list of tools added to the request by MCP, all the tool are in the format "clientName-toolName"
 	BifrostContextKeyLargePayloadMode                    BifrostContextKey = "bifrost-large-payload-mode"                    // bool (set by bifrost - DO NOT SET THIS MANUALLY)) indicates large payload streaming mode is active
@@ -288,7 +292,7 @@ BifrostContextKeyValidateKeys                        BifrostContextKey = "bifros
 	BifrostContextKeySessionID                           BifrostContextKey = "bifrost-session-id"                            // string session ID for the request (session stickiness)
 	BifrostContextKeySessionTTL                          BifrostContextKey = "bifrost-session-ttl"                           // time.Duration session TTL for the request (session stickiness)
 	BifrostContextKeyMCPExtraHeaders                     BifrostContextKey = "bifrost-mcp-extra-headers"                     // map[string][]string (these headers are forwarded only to the MCP while tool execution if they are in the allowlist of the MCP client)
-	BifrostContextKeyMCPLogID                            BifrostContextKey = "bifrost-mcp-log-id"                             // string (unique UUID for each MCP tool log entry - set per goroutine by agent executor - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyMCPLogID                            BifrostContextKey = "bifrost-mcp-log-id"                            // string (unique UUID for each MCP tool log entry - set per goroutine by agent executor - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyCompatConvertTextToChat             BifrostContextKey = "bifrost-compat-convert-text-to-chat"           // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatConvertChatToResponses        BifrostContextKey = "bifrost-compat-convert-chat-to-responses"      // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatShouldDropParams              BifrostContextKey = "bifrost-compat-should-drop-params"             // bool (per-request override from x-bf-compat header)
@@ -297,7 +301,9 @@ BifrostContextKeyValidateKeys                        BifrostContextKey = "bifros
 	BifrostContextKeyDimensions                          BifrostContextKey = "bifrost-dimensions"                            // map[string]string (set by HTTP transport from x-bf-dim-* headers) BifrostContextKeyDimensions holds per-request key/value dimensions supplied via x-bf-dim-<key> request headers. These dimensions are forwarded to internal logs (as metadata)
 	BifrostContextKeySkipModelCatalogProviderSelection   BifrostContextKey = "bifrost-skip-model-catalog-provider-selection" // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - skip model catalog provider selection
 	IsAPIKeyAuthContextKey                               BifrostContextKey = "is_api_key_auth"
-	IsLocalAdminContextKey                               BifrostContextKey = "is_local_admin"                                // bool (set by auth middleware when password-based auth succeeds - local admin user bypasses RBAC)
+	IsLocalAdminContextKey                               BifrostContextKey = "is_local_admin"                // bool (set by auth middleware when password-based auth succeeds - local admin user bypasses RBAC)
+	BifrostContextKeyPassthroughOverridesPresent         BifrostContextKey = "passthrough_overrides_present" // bool (set by HTTP transport) - passthrough raw request requested
+
 )
 
 const (
@@ -417,6 +423,11 @@ type BifrostRequest struct {
 	FileRetrieveRequest          *BifrostFileRetrieveRequest
 	FileDeleteRequest            *BifrostFileDeleteRequest
 	FileContentRequest           *BifrostFileContentRequest
+	CachedContentCreateRequest   *BifrostCachedContentCreateRequest
+	CachedContentListRequest     *BifrostCachedContentListRequest
+	CachedContentRetrieveRequest *BifrostCachedContentRetrieveRequest
+	CachedContentUpdateRequest   *BifrostCachedContentUpdateRequest
+	CachedContentDeleteRequest   *BifrostCachedContentDeleteRequest
 	BatchCreateRequest           *BifrostBatchCreateRequest
 	BatchListRequest             *BifrostBatchListRequest
 	BatchRetrieveRequest         *BifrostBatchRetrieveRequest
@@ -501,6 +512,28 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 			return br.FileContentRequest.Provider, *br.FileContentRequest.Model, nil
 		}
 		return br.FileContentRequest.Provider, "", nil
+	case br.CachedContentCreateRequest != nil:
+		return br.CachedContentCreateRequest.Provider, br.CachedContentCreateRequest.Model, nil
+	case br.CachedContentListRequest != nil:
+		if br.CachedContentListRequest.Model != nil {
+			return br.CachedContentListRequest.Provider, *br.CachedContentListRequest.Model, nil
+		}
+		return br.CachedContentListRequest.Provider, "", nil
+	case br.CachedContentRetrieveRequest != nil:
+		if br.CachedContentRetrieveRequest.Model != nil {
+			return br.CachedContentRetrieveRequest.Provider, *br.CachedContentRetrieveRequest.Model, nil
+		}
+		return br.CachedContentRetrieveRequest.Provider, "", nil
+	case br.CachedContentUpdateRequest != nil:
+		if br.CachedContentUpdateRequest.Model != nil {
+			return br.CachedContentUpdateRequest.Provider, *br.CachedContentUpdateRequest.Model, nil
+		}
+		return br.CachedContentUpdateRequest.Provider, "", nil
+	case br.CachedContentDeleteRequest != nil:
+		if br.CachedContentDeleteRequest.Model != nil {
+			return br.CachedContentDeleteRequest.Provider, *br.CachedContentDeleteRequest.Model, nil
+		}
+		return br.CachedContentDeleteRequest.Provider, "", nil
 	case br.BatchCreateRequest != nil:
 		if br.BatchCreateRequest.Model != nil {
 			return br.BatchCreateRequest.Provider, *br.BatchCreateRequest.Model, nil
@@ -595,6 +628,16 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.VideoDeleteRequest.Provider = provider
 	case br.VideoRemixRequest != nil:
 		br.VideoRemixRequest.Provider = provider
+	case br.CachedContentCreateRequest != nil:
+		br.CachedContentCreateRequest.Provider = provider
+	case br.CachedContentListRequest != nil:
+		br.CachedContentListRequest.Provider = provider
+	case br.CachedContentRetrieveRequest != nil:
+		br.CachedContentRetrieveRequest.Provider = provider
+	case br.CachedContentUpdateRequest != nil:
+		br.CachedContentUpdateRequest.Provider = provider
+	case br.CachedContentDeleteRequest != nil:
+		br.CachedContentDeleteRequest.Provider = provider
 	}
 }
 
@@ -629,6 +672,24 @@ func (br *BifrostRequest) SetModel(model string) {
 	case br.BatchCreateRequest != nil:
 		if br.BatchCreateRequest.Model != nil {
 			br.BatchCreateRequest.Model = new(model)
+		}
+	case br.CachedContentCreateRequest != nil:
+		br.CachedContentCreateRequest.Model = model
+	case br.CachedContentListRequest != nil:
+		if br.CachedContentListRequest.Model != nil {
+			br.CachedContentListRequest.Model = new(model)
+		}
+	case br.CachedContentRetrieveRequest != nil:
+		if br.CachedContentRetrieveRequest.Model != nil {
+			br.CachedContentRetrieveRequest.Model = new(model)
+		}
+	case br.CachedContentUpdateRequest != nil:
+		if br.CachedContentUpdateRequest.Model != nil {
+			br.CachedContentUpdateRequest.Model = new(model)
+		}
+	case br.CachedContentDeleteRequest != nil:
+		if br.CachedContentDeleteRequest.Model != nil {
+			br.CachedContentDeleteRequest.Model = new(model)
 		}
 	}
 }
@@ -694,6 +755,16 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 		br.VideoGenerationRequest.RawRequestBody = rawRequestBody
 	case br.VideoRemixRequest != nil:
 		br.VideoRemixRequest.RawRequestBody = rawRequestBody
+	case br.CachedContentCreateRequest != nil:
+		br.CachedContentCreateRequest.RawRequestBody = rawRequestBody
+	case br.CachedContentListRequest != nil:
+		br.CachedContentListRequest.RawRequestBody = rawRequestBody
+	case br.CachedContentRetrieveRequest != nil:
+		br.CachedContentRetrieveRequest.RawRequestBody = rawRequestBody
+	case br.CachedContentUpdateRequest != nil:
+		br.CachedContentUpdateRequest.RawRequestBody = rawRequestBody
+	case br.CachedContentDeleteRequest != nil:
+		br.CachedContentDeleteRequest.RawRequestBody = rawRequestBody
 	}
 }
 
@@ -767,6 +838,11 @@ type BifrostResponse struct {
 	FileRetrieveResponse          *BifrostFileRetrieveResponse
 	FileDeleteResponse            *BifrostFileDeleteResponse
 	FileContentResponse           *BifrostFileContentResponse
+	CachedContentCreateResponse   *BifrostCachedContentCreateResponse
+	CachedContentListResponse     *BifrostCachedContentListResponse
+	CachedContentRetrieveResponse *BifrostCachedContentRetrieveResponse
+	CachedContentUpdateResponse   *BifrostCachedContentUpdateResponse
+	CachedContentDeleteResponse   *BifrostCachedContentDeleteResponse
 	BatchCreateResponse           *BifrostBatchCreateResponse
 	BatchListResponse             *BifrostBatchListResponse
 	BatchRetrieveResponse         *BifrostBatchRetrieveResponse
@@ -867,6 +943,16 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.ContainerFileDeleteResponse.ExtraFields
 	case r.PassthroughResponse != nil:
 		return &r.PassthroughResponse.ExtraFields
+	case r.CachedContentCreateResponse != nil:
+		return &r.CachedContentCreateResponse.ExtraFields
+	case r.CachedContentListResponse != nil:
+		return &r.CachedContentListResponse.ExtraFields
+	case r.CachedContentRetrieveResponse != nil:
+		return &r.CachedContentRetrieveResponse.ExtraFields
+	case r.CachedContentUpdateResponse != nil:
+		return &r.CachedContentUpdateResponse.ExtraFields
+	case r.CachedContentDeleteResponse != nil:
+		return &r.CachedContentDeleteResponse.ExtraFields
 	}
 
 	return &BifrostResponseExtraFields{}
@@ -1084,6 +1170,31 @@ func (r *BifrostResponse) PopulateExtraFields(requestType RequestType, provider 
 		r.PassthroughResponse.ExtraFields.Provider = provider
 		r.PassthroughResponse.ExtraFields.OriginalModelRequested = originalModelRequested
 		r.PassthroughResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.CachedContentCreateResponse != nil:
+		r.CachedContentCreateResponse.ExtraFields.RequestType = requestType
+		r.CachedContentCreateResponse.ExtraFields.Provider = provider
+		r.CachedContentCreateResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.CachedContentCreateResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.CachedContentListResponse != nil:
+		r.CachedContentListResponse.ExtraFields.RequestType = requestType
+		r.CachedContentListResponse.ExtraFields.Provider = provider
+		r.CachedContentListResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.CachedContentListResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.CachedContentRetrieveResponse != nil:
+		r.CachedContentRetrieveResponse.ExtraFields.RequestType = requestType
+		r.CachedContentRetrieveResponse.ExtraFields.Provider = provider
+		r.CachedContentRetrieveResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.CachedContentRetrieveResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.CachedContentUpdateResponse != nil:
+		r.CachedContentUpdateResponse.ExtraFields.RequestType = requestType
+		r.CachedContentUpdateResponse.ExtraFields.Provider = provider
+		r.CachedContentUpdateResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.CachedContentUpdateResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+	case r.CachedContentDeleteResponse != nil:
+		r.CachedContentDeleteResponse.ExtraFields.RequestType = requestType
+		r.CachedContentDeleteResponse.ExtraFields.Provider = provider
+		r.CachedContentDeleteResponse.ExtraFields.OriginalModelRequested = originalModelRequested
+		r.CachedContentDeleteResponse.ExtraFields.ResolvedModelUsed = resolvedModel
 	}
 }
 

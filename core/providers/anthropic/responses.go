@@ -5056,6 +5056,23 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 		return nil
 	}
 
+	// Text editor family (text_editor_*): normalize to the model's generation
+	// via TextEditorGeneration so old-gen requests against new-gen-only models
+	// (e.g. sonnet-4-5+) get auto-upgraded to text_editor_20250728. Scoped to
+	// text_editor only — computer-use tools are handled by the case below
+	// (which preserves the embedded display_width_px / display_height_px from
+	// ResponsesToolComputerUsePreview), and bash falls through to the
+	// ResponsesToolTypeLocalShell case (no version variants).
+	if baseTool := computerUseBaseTool(string(tool.Type)); baseTool == "text_editor" {
+		if wantType, wantName := NormalizedToolSpec(TextEditorGeneration(model), baseTool); wantType != "" {
+			anthropicType := AnthropicToolType(wantType)
+			return &AnthropicTool{
+				Type: &anthropicType,
+				Name: wantName,
+			}
+		}
+	}
+
 	switch tool.Type {
 	case schemas.ResponsesToolTypeCodeInterpreter:
 		if hasWebSearchOrFetch {
@@ -5092,7 +5109,7 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 		// Dynamic filtering (web_search_20260209) only available on Anthropic + Azure
 		features, ok := ProviderFeatures[provider]
 		if ok && features.WebSearchDynamic &&
-			(strings.Contains(model, "4.6") || strings.Contains(model, "4-6")) {
+			(strings.Contains(model, "4.6") || strings.Contains(model, "4-6") || strings.Contains(model, "4.7") || strings.Contains(model, "4-7")) {
 			webSearchType = AnthropicToolTypeWebSearch20260209
 		}
 		anthropicTool := &AnthropicTool{
@@ -5166,12 +5183,12 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool, pr
 	case schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250124):
 		return &AnthropicTool{
 			Type: schemas.Ptr(AnthropicToolTypeTextEditor20250124),
-			Name: string(AnthropicToolNameTextEditor),
+			Name: string(AnthropicToolNameTextEditorLegacy),
 		}
 	case schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250429):
 		return &AnthropicTool{
 			Type: schemas.Ptr(AnthropicToolTypeTextEditor20250429),
-			Name: string(AnthropicToolNameTextEditor),
+			Name: string(AnthropicToolNameTextEditorLegacy),
 		}
 	case schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250728):
 		return &AnthropicTool{
