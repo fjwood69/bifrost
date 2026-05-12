@@ -363,7 +363,7 @@ All Claude Code agentic features tested and working through Bifrost:
 | Feature | Status |
 |---|---|
 | Basic chat (streaming) | ✅ |
-| Tool use (Bash, Read, Write, Edit) | ✅ Qwen3.5, DeepSeek, Kimi, Gemini |
+| Tool use (Bash, Read, Write, Edit) | ✅ Qwen3.5, DeepSeek, Kimi, Gemini, Gemma 4 26B A4B it |
 | Plan Mode | ✅ |
 | Multi-step agentic tasks | ✅ |
 | `count_tokens` preflight | ✅ stub |
