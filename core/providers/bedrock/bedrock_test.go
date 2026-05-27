@@ -200,36 +200,36 @@ func TestBedrock(t *testing.T) {
 			ToolCallsStreaming:         true,
 			MultipleToolCalls:          true,
 			MultipleToolCallsStreaming: true,
-			End2EndToolCalling:    true,
-			AutomaticFunctionCall: true,
-			ImageURL:              false, // Bedrock doesn't support image URL
-			ImageBase64:           true,
-			MultipleImages:        false, // Since one of the image is URL
-			FileBase64:            true,
-			FileURL:               false, // S3 urls supported for nova models
-			CompleteEnd2End:       true,
-			Embedding:             true,
-			Rerank:                rerankModelARN != "",
-			ListModels:            true,
-			Reasoning:             true,
-			PromptCaching:         true,
-			BatchCreate:           true,
-			BatchList:             true,
-			BatchRetrieve:         true,
-			BatchCancel:           true,
-			BatchResults:          true,
-			FileUpload:            true,
-			FileList:              true,
-			FileRetrieve:          true,
-			FileDelete:            true,
-			FileContent:           true,
-			FileBatchInput:        true,
-			CountTokens:           true,
-			ImageEdit:             true,
-			ImageVariation:        true,
-			StructuredOutputs:     true,
-			InterleavedThinking:  true,
-			EagerInputStreaming:  true, // fine-grained-tool-streaming-2025-05-14 (per B-header)
+			End2EndToolCalling:         true,
+			AutomaticFunctionCall:      true,
+			ImageURL:                   false, // Bedrock doesn't support image URL
+			ImageBase64:                true,
+			MultipleImages:             false, // Since one of the image is URL
+			FileBase64:                 true,
+			FileURL:                    false, // S3 urls supported for nova models
+			CompleteEnd2End:            true,
+			Embedding:                  true,
+			Rerank:                     rerankModelARN != "",
+			ListModels:                 true,
+			Reasoning:                  true,
+			PromptCaching:              true,
+			BatchCreate:                true,
+			BatchList:                  true,
+			BatchRetrieve:              true,
+			BatchCancel:                true,
+			BatchResults:               true,
+			FileUpload:                 true,
+			FileList:                   true,
+			FileRetrieve:               true,
+			FileDelete:                 true,
+			FileContent:                true,
+			FileBatchInput:             true,
+			CountTokens:                true,
+			ImageEdit:                  true,
+			ImageVariation:             true,
+			StructuredOutputs:          true,
+			InterleavedThinking:        true,
+			EagerInputStreaming:        true, // fine-grained-tool-streaming-2025-05-14 (per B-header)
 			// ServerToolsViaOpenAIEndpoint: Bedrock does not support web_search / web_fetch /
 			// code_execution server tools per Table 20, so no cases would run. Left off.
 		},
@@ -362,7 +362,7 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 	stop := testStop
 	trace := testTrace
 	latency := testLatency
-	serviceTier := "priority"
+	serviceTier := schemas.BifrostServiceTierPriority
 	props := testProps
 
 	tests := []struct {
@@ -514,7 +514,7 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 				},
 				InferenceConfig: &bedrock.BedrockInferenceConfig{},
 				ServiceTier: &bedrock.BedrockServiceTier{
-					Type: serviceTier,
+					Type: bedrock.BedrockServiceTierTypePriority,
 				},
 			},
 		},
@@ -2376,34 +2376,20 @@ func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testin
 	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
 	require.NoError(t, err)
 	require.NotNil(t, bedrockReq)
-	require.NotNil(t, bedrockReq.AdditionalModelRequestFields, "expected additional model request fields for anthropic responses structured output")
 
-	outputConfigRaw, hasOutputConfig := bedrockReq.AdditionalModelRequestFields.Get("output_config")
-	require.True(t, hasOutputConfig, "expected output_config for anthropic responses structured output")
-
-	outputConfig, ok := schemas.SafeExtractOrderedMap(outputConfigRaw)
-	require.True(t, ok, "expected output_config to be an ordered map")
-
-	formatRaw, hasFormat := outputConfig.Get("format")
-	require.True(t, hasFormat, "expected output_config.format")
-
-	formatMap, ok := schemas.SafeExtractOrderedMap(formatRaw)
-	require.True(t, ok, "expected output_config.format to be an ordered map")
-
-	formatType, ok := formatMap.Get("type")
-	require.True(t, ok, "expected output_config.format.type")
-	assert.Equal(t, "json_schema", formatType)
-
-	schemaRaw, ok := formatMap.Get("schema")
-	require.True(t, ok, "expected output_config.format.schema")
-	schemaMap, ok := schemas.SafeExtractOrderedMap(schemaRaw)
-	require.True(t, ok, "expected output_config.format.schema to remain ordered")
-	require.NotNil(t, schemaMap)
-
-	if bedrockReq.ToolConfig != nil {
-		assert.Nil(t, bedrockReq.ToolConfig.ToolChoice, "expected no forced tool choice for anthropic responses structured output")
-		assert.Empty(t, bedrockReq.ToolConfig.Tools, "expected no synthetic structured output tool for anthropic responses structured output")
+	// PR #3184 moved Anthropic structured output off native output_config.format
+	// (rejected by Opus 4.7) onto the synthetic bf_so_* tool path used by all
+	// Bedrock models. The test now asserts the synthetic tool reached
+	// toolConfig.tools.
+	require.NotNil(t, bedrockReq.ToolConfig, "expected toolConfig for structured output")
+	foundSyntheticTool := false
+	for _, tool := range bedrockReq.ToolConfig.Tools {
+		if tool.ToolSpec != nil && strings.HasPrefix(tool.ToolSpec.Name, "bf_so_") {
+			foundSyntheticTool = true
+			break
+		}
 	}
+	require.True(t, foundSyntheticTool, "expected synthetic bf_so_* tool for structured output")
 }
 
 func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion(t *testing.T) {
@@ -3312,22 +3298,17 @@ func TestAnthropicStructuredOutputUsesOutputConfigWithoutForcedToolChoice(t *tes
 	require.NotNil(t, result)
 	require.NotNil(t, result.AdditionalModelRequestFields)
 
-	outputConfigRaw, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
-	require.True(t, hasOutputConfig, "expected output_config for anthropic structured output")
-
-	outputConfig, ok := outputConfigRaw.(*schemas.OrderedMap)
-	require.True(t, ok, "expected output_config to be an ordered map")
-
-	formatRaw, hasFormat := outputConfig.Get("format")
-	require.True(t, hasFormat, "expected output_config.format")
-
-	format, ok := formatRaw.(*schemas.OrderedMap)
-	require.True(t, ok, "expected output_config.format to be an ordered map")
-	formatType, hasType := format.Get("type")
-	require.True(t, hasType, "expected output_config.format.type")
-	assert.Equal(t, "json_schema", formatType)
-	_, hasSchema := format.Get("schema")
-	assert.True(t, hasSchema, "expected output_config.format.schema")
+	// PR #3184 moved Anthropic structured output off native output_config.format
+	// onto the synthetic bf_so_* tool path used by all Bedrock models.
+	require.NotNil(t, result.ToolConfig, "expected toolConfig for structured output")
+	foundSyntheticTool := false
+	for _, tool := range result.ToolConfig.Tools {
+		if tool.ToolSpec != nil && strings.HasPrefix(tool.ToolSpec.Name, "bf_so_") {
+			foundSyntheticTool = true
+			break
+		}
+	}
+	require.True(t, foundSyntheticTool, "expected synthetic bf_so_* tool for structured output")
 
 	// reasoning should still be preserved for anthropic
 	thinkingRaw, hasThinking := result.AdditionalModelRequestFields.Get("thinking")
@@ -3335,12 +3316,6 @@ func TestAnthropicStructuredOutputUsesOutputConfigWithoutForcedToolChoice(t *tes
 	thinking, ok := thinkingRaw.(map[string]any)
 	require.True(t, ok, "expected thinking to be a map")
 	assert.Equal(t, "enabled", thinking["type"])
-
-	// structured output should NOT force tool choice on Bedrock anthropic
-	if result.ToolConfig != nil {
-		assert.Nil(t, result.ToolConfig.ToolChoice, "expected no forced tool choice for anthropic structured output")
-		assert.Empty(t, result.ToolConfig.Tools, "expected no synthetic structured output tool for anthropic structured output")
-	}
 }
 
 func TestAnthropicStructuredOutputAcceptsOrderedMaps(t *testing.T) {
@@ -3385,26 +3360,19 @@ func TestAnthropicStructuredOutputAcceptsOrderedMaps(t *testing.T) {
 	require.NotNil(t, result)
 	require.NotNil(t, result.AdditionalModelRequestFields)
 
-	outputConfigRaw, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
-	require.True(t, hasOutputConfig, "expected output_config for anthropic structured output")
-
-	outputConfig, ok := outputConfigRaw.(*schemas.OrderedMap)
-	require.True(t, ok, "expected output_config to be an ordered map")
-
-	formatRaw, hasFormat := outputConfig.Get("format")
-	require.True(t, hasFormat, "expected output_config.format")
-
-	format, ok := formatRaw.(*schemas.OrderedMap)
-	require.True(t, ok, "expected output_config.format to be an ordered map")
-
-	formatType, ok := format.Get("type")
-	require.True(t, ok, "expected output_config.format.type")
-	assert.Equal(t, "json_schema", formatType)
-
-	schemaRaw, ok := format.Get("schema")
-	require.True(t, ok, "expected output_config.format.schema")
-	_, ok = schemaRaw.(*schemas.OrderedMap)
-	require.True(t, ok, "expected output_config.format.schema to remain ordered")
+	// PR #3184 moved Anthropic structured output off native output_config.format
+	// onto the synthetic bf_so_* tool path. Test asserts the synthetic tool path
+	// accepts OrderedMap-shaped response_format input without dropping the schema.
+	require.NotNil(t, result.ToolConfig, "expected toolConfig for structured output")
+	var syntheticTool *bedrock.BedrockTool
+	for i, tool := range result.ToolConfig.Tools {
+		if tool.ToolSpec != nil && strings.HasPrefix(tool.ToolSpec.Name, "bf_so_") {
+			syntheticTool = &result.ToolConfig.Tools[i]
+			break
+		}
+	}
+	require.NotNil(t, syntheticTool, "expected synthetic bf_so_* tool for structured output")
+	require.NotEmpty(t, syntheticTool.ToolSpec.InputSchema.JSON, "expected synthetic tool schema bytes")
 }
 
 // betaListContains reports whether the OrderedMap's anthropic_beta entry
@@ -3677,23 +3645,27 @@ func TestAnthropicStructuredOutputMergesAdditionalModelRequestFieldPaths(t *test
 	require.NotNil(t, result)
 	require.NotNil(t, result.AdditionalModelRequestFields)
 
+	// Structured output is routed through the synthetic bf_so_* tool path on all
+	// Bedrock models (see PR #3184 and utils.go:1172). Native output_config.format
+	// is intentionally not written for any Bedrock model, so the merge test
+	// asserts the synthetic tool reached toolConfig.tools instead.
+	require.NotNil(t, result.ToolConfig, "expected toolConfig for structured output")
+	foundSyntheticTool := false
+	for _, tool := range result.ToolConfig.Tools {
+		if tool.ToolSpec != nil && strings.HasPrefix(tool.ToolSpec.Name, "bf_so_") {
+			foundSyntheticTool = true
+			break
+		}
+	}
+	require.True(t, foundSyntheticTool, "expected synthetic bf_so_* tool for structured output")
+
+	// Incoming additionalModelRequestFieldPaths.output_config key must be merged
+	// into AdditionalModelRequestFields.output_config even though the structured
+	// output path no longer writes output_config.format itself.
 	outputConfigRaw, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
-	require.True(t, hasOutputConfig, "expected output_config to exist after merge")
+	require.True(t, hasOutputConfig, "expected output_config to exist from user-provided fields")
 	outputConfig, ok := outputConfigRaw.(*schemas.OrderedMap)
 	require.True(t, ok, "expected output_config to be an ordered map")
-
-	// Existing structured output format must be preserved.
-	formatRaw, hasFormat := outputConfig.Get("format")
-	require.True(t, hasFormat, "expected output_config.format to be preserved")
-	format, ok := formatRaw.(*schemas.OrderedMap)
-	require.True(t, ok, "expected output_config.format to be an ordered map")
-	formatType, hasType := format.Get("type")
-	require.True(t, hasType, "expected output_config.format.type")
-	assert.Equal(t, "json_schema", formatType)
-	_, hasSchema := format.Get("schema")
-	assert.True(t, hasSchema, "expected output_config.format.schema")
-
-	// Incoming additionalModelRequestFieldPaths.output_config key must be merged.
 	foo, hasFoo := outputConfig.Get("foo")
 	require.True(t, hasFoo, "expected output_config.foo to be preserved")
 	assert.Equal(t, "bar", foo)
@@ -3951,6 +3923,71 @@ func TestMultiTurnReasoningContentPassthrough(t *testing.T) {
 		assert.True(t, foundReasoning, "Expected reasoning content block in assistant message")
 	})
 
+	t.Run("AssistantMessage_WithReasoningAndToolCalls_ReasoningComesFirst", func(t *testing.T) {
+		reasoningText := "I need to call a tool to answer this."
+		signature := "sig_abc123"
+		assistantContent := "Let me check that for you."
+		toolCallID := "tooluse_abc123"
+
+		bifrostReq := &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    "anthropic.claude-sonnet-4-6",
+			Input: []schemas.ChatMessage{
+				{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What time is it?")},
+				},
+				{
+					Role:    schemas.ChatMessageRoleAssistant,
+					Content: &schemas.ChatMessageContent{ContentStr: &assistantContent},
+					ChatAssistantMessage: &schemas.ChatAssistantMessage{
+						ReasoningDetails: []schemas.ChatReasoningDetails{
+							{
+								Index:     0,
+								Type:      schemas.BifrostReasoningDetailsTypeText,
+								Text:      &reasoningText,
+								Signature: &signature,
+							},
+						},
+						ToolCalls: []schemas.ChatAssistantMessageToolCall{
+							{
+								ID:   &toolCallID,
+								Type: schemas.Ptr("function"),
+								Function: schemas.ChatAssistantMessageToolCallFunction{
+									Name:      schemas.Ptr("get_time"),
+									Arguments: "{}",
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+
+		assistantMsg := result.Messages[1]
+		// reasoning + text + tool_use = at least 3 blocks
+		require.GreaterOrEqual(t, len(assistantMsg.Content), 3)
+
+		// Reasoning MUST be the first block
+		assert.NotNil(t, assistantMsg.Content[0].ReasoningContent,
+			"reasoning block must be first content block; got %+v", assistantMsg.Content[0])
+
+		// tool_use must appear after reasoning
+		var foundToolUse bool
+		for _, block := range assistantMsg.Content[1:] {
+			if block.ToolUse != nil {
+				foundToolUse = true
+				break
+			}
+		}
+		assert.True(t, foundToolUse, "tool_use block must appear after reasoning block")
+	})
+
 	t.Run("AssistantMessage_WithoutReasoningDetails_NoReasoningContent", func(t *testing.T) {
 		assistantContent := "Simple response"
 
@@ -4069,9 +4106,9 @@ func TestBedrockStopReasonMapping(t *testing.T) {
 		{"MaxTokens", "max_tokens", "length"},
 		{"StopSequence", "stop_sequence", "stop"},
 		{"ToolUse", "tool_use", "tool_calls"},
-		{"GuardrailIntervened", "guardrail_intervened", "content_filter"},
+		{"GuardrailIntervened", "guardrail_intervened", "guardrail_intervened"}, // no clean mapping — passes through
 		{"ContentFiltered", "content_filtered", "content_filter"},
-		{"UnknownReason", "some_unknown_reason", "stop"},
+		{"UnknownReason", "some_unknown_reason", "some_unknown_reason"}, // no clean mapping — passes through
 	}
 
 	for _, tt := range tests {
@@ -4100,6 +4137,116 @@ func TestBedrockStopReasonMapping(t *testing.T) {
 			require.NotNil(t, bifrostResp.Choices[0].FinishReason)
 			assert.Equal(t, tt.expectedBifrost, *bifrostResp.Choices[0].FinishReason,
 				"Bedrock stop reason %q should map to %q", tt.bedrockStopReason, tt.expectedBifrost)
+		})
+	}
+}
+
+// TestBedrockStopReasonMappingResponsesPath tests stop reason normalisation for
+// the Responses API path (BedrockConverseResponse.ToBifrostResponsesResponse).
+func TestBedrockStopReasonMappingResponsesPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		bedrockReason   string
+		expectedBifrost string
+	}{
+		{"EndTurn", "end_turn", "stop"},
+		{"MaxTokens", "max_tokens", "length"},
+		{"StopSequence", "stop_sequence", "stop"},
+		{"ToolUse", "tool_use", "tool_calls"},
+		{"ContentFiltered", "content_filtered", "content_filter"},
+		{"GuardrailIntervened", "guardrail_intervened", "guardrail_intervened"}, // no clean mapping — passes through
+		{"UnknownReason", "some_unknown_reason", "some_unknown_reason"},         // no clean mapping — passes through
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := &bedrock.BedrockConverseResponse{
+				StopReason: tt.bedrockReason,
+				Output: &bedrock.BedrockConverseOutput{
+					Message: &bedrock.BedrockMessage{
+						Role: bedrock.BedrockMessageRoleAssistant,
+						Content: []bedrock.BedrockContentBlock{
+							{Text: schemas.Ptr("Response text")},
+						},
+					},
+				},
+			}
+
+			bifrostResp, err := response.ToBifrostResponsesResponse(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, bifrostResp)
+			require.NotNil(t, bifrostResp.StopReason, "StopReason should be set")
+			assert.Equal(t, tt.expectedBifrost, *bifrostResp.StopReason,
+				"Bedrock stop reason %q should map to %q in responses path", tt.bedrockReason, tt.expectedBifrost)
+		})
+	}
+}
+
+// TestBifrostToBedrockStopReasonReverseMapping tests the reverse conversion
+// (BifrostResponsesResponse.StopReason → BedrockConverseResponse.StopReason).
+func TestBifrostToBedrockStopReasonReverseMapping(t *testing.T) {
+	t.Parallel()
+
+	textOutput := []schemas.ResponsesMessage{
+		{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{
+						Type: schemas.ResponsesOutputMessageContentTypeText,
+						Text: schemas.Ptr("Hello"),
+					},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name              string
+		stopReason        *string
+		incompleteDetails *schemas.ResponsesResponseIncompleteDetails
+		expectedBedrock   string
+	}{
+		{"Stop", schemas.Ptr("stop"), nil, "end_turn"},
+		{"Length", schemas.Ptr("length"), nil, "max_tokens"},
+		{"ToolCalls", schemas.Ptr("tool_calls"), nil, "tool_use"},
+		{"ContentFilter", schemas.Ptr("content_filter"), nil, "content_filtered"},
+		{"GuardrailIntervened", schemas.Ptr("guardrail_intervened"), nil, "guardrail_intervened"}, // passes through
+		{"UnknownPassthrough", schemas.Ptr("some_unknown_reason"), nil, "some_unknown_reason"},    // passes through
+		{
+			// StopReason takes priority over IncompleteDetails
+			name:              "StopReasonOverridesIncompleteDetails",
+			stopReason:        schemas.Ptr("stop"),
+			incompleteDetails: &schemas.ResponsesResponseIncompleteDetails{Reason: "max_tokens"},
+			expectedBedrock:   "end_turn",
+		},
+		{
+			// IncompleteDetails is used when StopReason is nil
+			name:              "IncompleteDetailsFallback",
+			stopReason:        nil,
+			incompleteDetails: &schemas.ResponsesResponseIncompleteDetails{Reason: "max_tokens"},
+			expectedBedrock:   "max_tokens",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := &schemas.BifrostResponsesResponse{
+				Output:            textOutput,
+				StopReason:        tt.stopReason,
+				IncompleteDetails: tt.incompleteDetails,
+			}
+
+			actual, err := bedrock.ToBedrockConverseResponse(input)
+			require.NoError(t, err)
+			require.NotNil(t, actual)
+			assert.Equal(t, tt.expectedBedrock, actual.StopReason,
+				"Bifrost stop reason %v should reverse-map to Bedrock %q", tt.stopReason, tt.expectedBedrock)
 		})
 	}
 }
@@ -4898,4 +5045,476 @@ func TestToBedrockResponsesRequest_NonLlamaConvertResponsesToolChoiceForcesToolC
 	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice)
 	require.NotNil(t, bedrockReq.ToolConfig.ToolChoice.Tool, "expected forced tool_choice for non-Llama models")
 	assert.Equal(t, toolName, bedrockReq.ToolConfig.ToolChoice.Tool.Name)
+}
+
+// ---------------------------------------------------------------------------
+// Structured output (response_format: json_schema) round-trip tests – Bedrock
+// ---------------------------------------------------------------------------
+
+// TestBedrockToBifrostChatResponse_StructuredOutput_FinishReasonStop verifies that when
+// the model returns only the synthetic bf_so_* tool block (no real tool calls),
+// finish_reason is mapped to "stop", not "tool_calls".
+func TestBedrockToBifrostChatResponse_StructuredOutput_FinishReasonStop(t *testing.T) {
+	const soToolName = "bf_so_my_schema"
+
+	response := &bedrock.BedrockConverseResponse{
+		StopReason: "tool_use",
+		Output: &bedrock.BedrockConverseOutput{
+			Message: &bedrock.BedrockMessage{
+				Role: bedrock.BedrockMessageRoleAssistant,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						ToolUse: &bedrock.BedrockToolUse{
+							ToolUseID: "toolu_001",
+							Name:      soToolName,
+							Input:     json.RawMessage(`{"color":"blue","animal":"fox"}`),
+						},
+					},
+				},
+			},
+		},
+		Usage: &bedrock.BedrockTokenUsage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, soToolName)
+
+	result, err := response.ToBifrostChatResponse(ctx, "claude-opus-4-6")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, result.Choices, 1, "expected exactly one choice")
+
+	choice := result.Choices[0]
+	require.NotNil(t, choice.ChatNonStreamResponseChoice, "expected non-streaming response choice")
+
+	// Content must be the JSON from the SO tool.
+	msg := choice.ChatNonStreamResponseChoice.Message
+	assert.NotNil(t, msg.Content.ContentStr, "expected ContentStr to be set from SO tool input")
+
+	// No real tool calls should be surfaced.
+	if msg.ChatAssistantMessage != nil {
+		assert.Empty(t, msg.ChatAssistantMessage.ToolCalls, "expected no tool calls in output")
+	}
+
+	// Finish reason must be "stop", not "tool_calls".
+	require.NotNil(t, choice.FinishReason)
+	assert.Equal(t, string(schemas.BifrostFinishReasonStop), *choice.FinishReason,
+		"expected finish_reason=stop when only SO tool was consumed")
+}
+
+// TestBedrockToBifrostChatResponse_StructuredOutput_MixedWithRealTools verifies that
+// when both the SO tool and a real tool call appear in the response, finish_reason
+// remains "tool_calls" so the caller knows to handle the real tool.
+func TestBedrockToBifrostChatResponse_StructuredOutput_MixedWithRealTools(t *testing.T) {
+	const soToolName = "bf_so_my_schema"
+
+	response := &bedrock.BedrockConverseResponse{
+		StopReason: "tool_use",
+		Output: &bedrock.BedrockConverseOutput{
+			Message: &bedrock.BedrockMessage{
+				Role: bedrock.BedrockMessageRoleAssistant,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						ToolUse: &bedrock.BedrockToolUse{
+							ToolUseID: "toolu_001",
+							Name:      soToolName,
+							Input:     json.RawMessage(`{"color":"blue","animal":"fox"}`),
+						},
+					},
+					{
+						ToolUse: &bedrock.BedrockToolUse{
+							ToolUseID: "toolu_real_001",
+							Name:      "get_weather",
+							Input:     json.RawMessage(`{"location":"NYC"}`),
+						},
+					},
+				},
+			},
+		},
+		Usage: &bedrock.BedrockTokenUsage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, soToolName)
+
+	result, err := response.ToBifrostChatResponse(ctx, "claude-opus-4-6")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, result.Choices, 1, "expected exactly one choice")
+
+	choice := result.Choices[0]
+	require.NotNil(t, choice.ChatNonStreamResponseChoice, "expected non-streaming response choice")
+
+	// The real tool call must be surfaced.
+	msg := choice.ChatNonStreamResponseChoice.Message
+	require.NotNil(t, msg.ChatAssistantMessage)
+	assert.NotEmpty(t, msg.ChatAssistantMessage.ToolCalls, "expected real tool calls to be present")
+
+	// Finish reason must remain "tool_calls".
+	require.NotNil(t, choice.FinishReason)
+	assert.Equal(t, string(schemas.BifrostFinishReasonToolCalls), *choice.FinishReason,
+		"expected finish_reason=tool_calls when real tool calls are also present")
+}
+
+// TestBedrockToBifrostResponsesResponse_StructuredOutput_FinishReasonStop verifies that
+// ToBifrostResponsesResponse maps stop_reason to "stop" (not "tool_calls") when only the
+// synthetic SO tool was consumed.
+func TestBedrockToBifrostResponsesResponse_StructuredOutput_FinishReasonStop(t *testing.T) {
+	const soToolName = "bf_so_user_info"
+
+	response := &bedrock.BedrockConverseResponse{
+		StopReason: "tool_use",
+		Output: &bedrock.BedrockConverseOutput{
+			Message: &bedrock.BedrockMessage{
+				Role: bedrock.BedrockMessageRoleAssistant,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						ToolUse: &bedrock.BedrockToolUse{
+							ToolUseID: "toolu_001",
+							Name:      soToolName,
+							Input:     json.RawMessage(`{"name":"John Doe","age":28,"city":"Pune"}`),
+						},
+					},
+				},
+			},
+		},
+		Usage: &bedrock.BedrockTokenUsage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, soToolName)
+
+	result, err := response.ToBifrostResponsesResponse(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.StopReason)
+	assert.Equal(t, "stop", *result.StopReason,
+		"expected stop_reason=stop when only SO tool was consumed")
+}
+
+// TestBedrockToBifrostResponsesResponse_StructuredOutput_MixedWithRealTools verifies that
+// stop_reason stays "tool_calls" when both the SO tool and a real tool call are present.
+func TestBedrockToBifrostResponsesResponse_StructuredOutput_MixedWithRealTools(t *testing.T) {
+	const soToolName = "bf_so_user_info"
+
+	response := &bedrock.BedrockConverseResponse{
+		StopReason: "tool_use",
+		Output: &bedrock.BedrockConverseOutput{
+			Message: &bedrock.BedrockMessage{
+				Role: bedrock.BedrockMessageRoleAssistant,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						ToolUse: &bedrock.BedrockToolUse{
+							ToolUseID: "toolu_001",
+							Name:      soToolName,
+							Input:     json.RawMessage(`{"name":"John Doe","age":28,"city":"Pune"}`),
+						},
+					},
+					{
+						ToolUse: &bedrock.BedrockToolUse{
+							ToolUseID: "toolu_real_001",
+							Name:      "get_weather",
+							Input:     json.RawMessage(`{"location":"Pune"}`),
+						},
+					},
+				},
+			},
+		},
+		Usage: &bedrock.BedrockTokenUsage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, soToolName)
+
+	result, err := response.ToBifrostResponsesResponse(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.StopReason)
+	assert.Equal(t, "tool_calls", *result.StopReason,
+		"expected stop_reason=tool_calls when real tool calls are also present")
+}
+
+// TestBedrockSearchResultToolResultRoundTrip is the regression gate for
+// https://github.com/maximhq/bifrost/issues/3537 — a Bedrock-native passthrough
+// request containing toolResult.content[].searchResult must survive
+// ToBifrostResponsesRequest → ToBedrockResponsesRequest with all fields intact.
+// Pre-fix, the SearchResult field is dropped during JSON unmarshal and the
+// outbound request shows toolResult.content = [{"text": ""}].
+func TestBedrockSearchResultToolResultRoundTrip(t *testing.T) {
+	original := &bedrock.BedrockConverseRequest{
+		ModelID: "anthropic.claude-sonnet-4-5",
+		Messages: []bedrock.BedrockMessage{
+			{
+				Role: bedrock.BedrockMessageRoleUser,
+				Content: []bedrock.BedrockContentBlock{
+					{Text: schemas.Ptr("What is Apptio?")},
+				},
+			},
+			{
+				Role: bedrock.BedrockMessageRoleAssistant,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						ToolUse: &bedrock.BedrockToolUse{
+							ToolUseID: "tooluse_a4rBqeZNRTKj2lTskvaO4H",
+							Name:      "RAGRequest",
+							Input:     json.RawMessage(`{"query":"What is Apptio?"}`),
+						},
+					},
+				},
+			},
+			{
+				Role: bedrock.BedrockMessageRoleUser,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						ToolResult: &bedrock.BedrockToolResult{
+							ToolUseID: "tooluse_a4rBqeZNRTKj2lTskvaO4H",
+							Status:    schemas.Ptr("success"),
+							Content: []bedrock.BedrockContentBlock{
+								{
+									SearchResult: &bedrock.BedrockSearchResultBlock{
+										Source: "Great Source of Information About Apptio",
+										Title:  "12adbd74-46bd-4a88-88b2-0048755f6eb5",
+										Content: []bedrock.BedrockSearchResultContent{
+											{Text: "Apptio is a company that makes calls to Bedrock using passthrough APIs via Bifrost"},
+										},
+										Citations: &bedrock.BedrockCitationsConfig{Enabled: true},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		System: []bedrock.BedrockSystemMessage{
+			{Text: schemas.Ptr("Do not rely on your knowledge to answer. Use only the tool results.")},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	// First leg: Bedrock → Bifrost intermediate.
+	bifrostReq, err := original.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, bifrostReq)
+
+	// Second leg: Bifrost intermediate → Bedrock.
+	rebuilt, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, rebuilt)
+
+	// Locate the rebuilt toolResult content block (its position may shift
+	// because the converter groups assistant tool calls and user tool results
+	// by state-machine emission, but a toolResult with our toolUseId must exist).
+	var got *bedrock.BedrockSearchResultBlock
+	for _, msg := range rebuilt.Messages {
+		for _, block := range msg.Content {
+			if block.ToolResult == nil {
+				continue
+			}
+			if block.ToolResult.ToolUseID != "tooluse_a4rBqeZNRTKj2lTskvaO4H" {
+				continue
+			}
+			for _, c := range block.ToolResult.Content {
+				if c.SearchResult != nil {
+					got = c.SearchResult
+					break
+				}
+			}
+		}
+	}
+
+	require.NotNil(t, got, "expected toolResult.content[].searchResult to round-trip; got nil (regression of #3537)")
+	assert.Equal(t, "Great Source of Information About Apptio", got.Source)
+	assert.Equal(t, "12adbd74-46bd-4a88-88b2-0048755f6eb5", got.Title)
+	require.Len(t, got.Content, 1)
+	assert.Equal(t, "Apptio is a company that makes calls to Bedrock using passthrough APIs via Bifrost", got.Content[0].Text)
+	require.NotNil(t, got.Citations)
+	assert.True(t, got.Citations.Enabled)
+}
+
+// TestBedrockVideoToolResultRoundTrip verifies that a video block inside
+// toolResult.content survives ToBifrostResponsesRequest → ToBedrockResponsesRequest
+// via the same sentinel-envelope mechanism that preserves searchResult. Without
+// the schema fix + envelope trigger extension, Video is silently dropped at JSON
+// unmarshal and the outbound request carries an empty text block instead.
+func TestBedrockVideoToolResultRoundTrip(t *testing.T) {
+	// Smallest plausible base64 payload — content doesn't matter for the round-trip,
+	// only that the Video struct is preserved verbatim.
+	videoBytes := "AAAA"
+
+	original := &bedrock.BedrockConverseRequest{
+		ModelID: "anthropic.claude-sonnet-4-5",
+		Messages: []bedrock.BedrockMessage{
+			{
+				Role: bedrock.BedrockMessageRoleUser,
+				Content: []bedrock.BedrockContentBlock{
+					{Text: schemas.Ptr("Describe the attached clip.")},
+				},
+			},
+			{
+				Role: bedrock.BedrockMessageRoleAssistant,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						ToolUse: &bedrock.BedrockToolUse{
+							ToolUseID: "tooluse_video_xyz",
+							Name:      "FetchClip",
+							Input:     json.RawMessage(`{"id":"abc"}`),
+						},
+					},
+				},
+			},
+			{
+				Role: bedrock.BedrockMessageRoleUser,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						ToolResult: &bedrock.BedrockToolResult{
+							ToolUseID: "tooluse_video_xyz",
+							Status:    schemas.Ptr("success"),
+							Content: []bedrock.BedrockContentBlock{
+								{
+									Video: &bedrock.BedrockVideoBlock{
+										Format: "mp4",
+										Source: bedrock.BedrockVideoSource{
+											Bytes: &videoBytes,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	bifrostReq, err := original.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, bifrostReq)
+
+	rebuilt, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, rebuilt)
+
+	var got *bedrock.BedrockVideoBlock
+	for _, msg := range rebuilt.Messages {
+		for _, block := range msg.Content {
+			if block.ToolResult == nil || block.ToolResult.ToolUseID != "tooluse_video_xyz" {
+				continue
+			}
+			for _, c := range block.ToolResult.Content {
+				if c.Video != nil {
+					got = c.Video
+					break
+				}
+			}
+		}
+	}
+
+	require.NotNil(t, got, "expected toolResult.content[].video to round-trip; got nil")
+	assert.Equal(t, "mp4", got.Format)
+	require.NotNil(t, got.Source.Bytes)
+	assert.Equal(t, videoBytes, *got.Source.Bytes)
+	assert.Nil(t, got.Source.S3Location, "expected union member s3Location to be nil when bytes is set")
+}
+
+// TestBedrockMixedBlockToolResultRoundTrip covers a toolResult.content array that
+// mixes a representable block (text) with an unrepresentable one (searchResult).
+// Because the envelope path triggers on *any* unrepresentable block and serializes
+// the entire content array, the whole array is bundled and must be decoded back
+// intact — both blocks, in order. This guards against the decode leg dropping the
+// representable block (or vice-versa) when the two are interleaved.
+func TestBedrockMixedBlockToolResultRoundTrip(t *testing.T) {
+	original := &bedrock.BedrockConverseRequest{
+		ModelID: "anthropic.claude-sonnet-4-5",
+		Messages: []bedrock.BedrockMessage{
+			{
+				Role: bedrock.BedrockMessageRoleUser,
+				Content: []bedrock.BedrockContentBlock{
+					{Text: schemas.Ptr("What is Apptio?")},
+				},
+			},
+			{
+				Role: bedrock.BedrockMessageRoleAssistant,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						ToolUse: &bedrock.BedrockToolUse{
+							ToolUseID: "tooluse_mixed_blocks",
+							Name:      "RAGRequest",
+							Input:     json.RawMessage(`{"query":"What is Apptio?"}`),
+						},
+					},
+				},
+			},
+			{
+				Role: bedrock.BedrockMessageRoleUser,
+				Content: []bedrock.BedrockContentBlock{
+					{
+						ToolResult: &bedrock.BedrockToolResult{
+							ToolUseID: "tooluse_mixed_blocks",
+							Status:    schemas.Ptr("success"),
+							Content: []bedrock.BedrockContentBlock{
+								{Text: schemas.Ptr("Summary: Apptio is a Bedrock passthrough customer.")},
+								{
+									SearchResult: &bedrock.BedrockSearchResultBlock{
+										Source: "Great Source of Information About Apptio",
+										Title:  "12adbd74-46bd-4a88-88b2-0048755f6eb5",
+										Content: []bedrock.BedrockSearchResultContent{
+											{Text: "Apptio is a company that makes calls to Bedrock using passthrough APIs via Bifrost"},
+										},
+										Citations: &bedrock.BedrockCitationsConfig{Enabled: true},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		System: []bedrock.BedrockSystemMessage{
+			{Text: schemas.Ptr("Do not rely on your knowledge to answer. Use only the tool results.")},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	bifrostReq, err := original.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, bifrostReq)
+
+	rebuilt, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, rebuilt)
+
+	// Locate the rebuilt toolResult content array for our toolUseId.
+	var gotContent []bedrock.BedrockContentBlock
+	for _, msg := range rebuilt.Messages {
+		for _, block := range msg.Content {
+			if block.ToolResult == nil || block.ToolResult.ToolUseID != "tooluse_mixed_blocks" {
+				continue
+			}
+			gotContent = block.ToolResult.Content
+		}
+	}
+
+	require.NotNil(t, gotContent, "expected toolResult with our toolUseId to round-trip; got nil")
+	require.Len(t, gotContent, 2, "expected both the text and searchResult blocks to survive the round-trip")
+
+	// Order is preserved: the envelope is a JSON array, so block[0] is the text
+	// block and block[1] is the searchResult block.
+	require.NotNil(t, gotContent[0].Text, "expected first block to remain a text block")
+	assert.Equal(t, "Summary: Apptio is a Bedrock passthrough customer.", *gotContent[0].Text)
+	assert.Nil(t, gotContent[0].SearchResult, "text block must not gain a searchResult")
+
+	got := gotContent[1].SearchResult
+	require.NotNil(t, got, "expected second block to remain a searchResult block")
+	assert.Nil(t, gotContent[1].Text, "searchResult block must not gain a text field")
+	assert.Equal(t, "Great Source of Information About Apptio", got.Source)
+	assert.Equal(t, "12adbd74-46bd-4a88-88b2-0048755f6eb5", got.Title)
+	require.Len(t, got.Content, 1)
+	assert.Equal(t, "Apptio is a company that makes calls to Bedrock using passthrough APIs via Bifrost", got.Content[0].Text)
+	require.NotNil(t, got.Citations)
+	assert.True(t, got.Citations.Enabled)
 }

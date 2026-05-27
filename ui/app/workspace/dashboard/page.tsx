@@ -164,6 +164,9 @@ export default function DashboardPage() {
 			mcp_server_labels: parseAsString.withDefault(""),
 			parent_request_id: parseAsString.withDefault(""),
 			user_ids: parseAsString.withDefault(""),
+			team_ids: parseAsString.withDefault(""),
+			customer_ids: parseAsString.withDefault(""),
+			business_unit_ids: parseAsString.withDefault(""),
 			aliases: parseAsString.withDefault(""),
 		},
 		{
@@ -198,6 +201,9 @@ export default function DashboardPage() {
 
 	// Free-form / multi-value sidebar inputs
 	const selectedUserIds = useMemo(() => parseCsvParam(urlState.user_ids), [urlState.user_ids]);
+	const selectedTeamIds = useMemo(() => parseCsvParam(urlState.team_ids), [urlState.team_ids]);
+	const selectedCustomerIds = useMemo(() => parseCsvParam(urlState.customer_ids), [urlState.customer_ids]);
+	const selectedBusinessUnitIds = useMemo(() => parseCsvParam(urlState.business_unit_ids), [urlState.business_unit_ids]);
 	const selectedAliases = useMemo(() => parseCsvParam(urlState.aliases), [urlState.aliases]);
 
 	// Derived filter for API calls.
@@ -233,6 +239,9 @@ export default function DashboardPage() {
 				}),
 			...(urlState.parent_request_id && { parent_request_id: urlState.parent_request_id }),
 			...(selectedUserIds.length > 0 && { user_ids: selectedUserIds }),
+			...(selectedTeamIds.length > 0 && { team_ids: selectedTeamIds }),
+			...(selectedCustomerIds.length > 0 && { customer_ids: selectedCustomerIds }),
+			...(selectedBusinessUnitIds.length > 0 && { business_unit_ids: selectedBusinessUnitIds }),
 			...(selectedAliases.length > 0 && { aliases: selectedAliases }),
 		}),
 		[
@@ -252,6 +261,9 @@ export default function DashboardPage() {
 			missingCostOnly,
 			metadataFilters,
 			selectedUserIds,
+			selectedTeamIds,
+			selectedCustomerIds,
+			selectedBusinessUnitIds,
 			selectedAliases,
 		],
 	);
@@ -579,6 +591,9 @@ export default function DashboardPage() {
 						: "",
 				parent_request_id: newFilters.parent_request_id || "",
 				user_ids: (newFilters.user_ids || []).join(","),
+				team_ids: (newFilters.team_ids || []).join(","),
+				customer_ids: (newFilters.customer_ids || []).join(","),
+				business_unit_ids: (newFilters.business_unit_ids || []).join(","),
 				aliases: (newFilters.aliases || []).join(","),
 			});
 		},
@@ -780,9 +795,9 @@ export default function DashboardPage() {
 						/>
 						{urlState.tab === "mcp" && mcpFilterData && (
 							<div className="flex items-center gap-1">
-								{mcpFilterData.tool_names?.length > 0 && (
+								{(mcpFilterData.tool_names?.length ?? 0) > 0 && (
 									<ModelFilterSelect
-										models={mcpFilterData.tool_names}
+										models={mcpFilterData.tool_names ?? []}
 										selectedModel={selectedMcpToolNames.length === 1 ? selectedMcpToolNames[0] : "all"}
 										onModelChange={(value) => {
 											if (value === "all") {
@@ -795,9 +810,9 @@ export default function DashboardPage() {
 										data-testid="dashboard-mcp-tool-filter"
 									/>
 								)}
-								{mcpFilterData.server_labels?.length > 0 && (
+								{(mcpFilterData.server_labels?.length ?? 0) > 0 && (
 									<ModelFilterSelect
-										models={mcpFilterData.server_labels}
+										models={mcpFilterData.server_labels ?? []}
 										selectedModel={selectedMcpServerLabels.length === 1 ? selectedMcpServerLabels[0] : "all"}
 										onModelChange={(value) => {
 											if (value === "all") {

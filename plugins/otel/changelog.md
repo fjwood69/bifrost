@@ -1,2 +1,2 @@
-- feat: trace attribute flow propagation through OTEL exporter
-- chore: upgraded core to v1.5.8 and framework to v1.3.8
+- feat: add `EnvVar` support for `CollectorURL`, `MetricsEndpoint`, and headers; implements `ConfigMarshallerPlugin` for storage/redaction round-trips (#3651)
+- refactor: align OTel attribute keys with the OpenTelemetry GenAI semantic conventions spec; legacy `gen_ai.*` emissions retained in parallel (#3732)

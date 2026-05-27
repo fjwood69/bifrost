@@ -224,9 +224,9 @@ func (r *BudgetResolver) EvaluateUserRequest(ctx *schemas.BifrostContext, userID
 // isModelRequired checks if the requested model is required for this request
 func (r *BudgetResolver) isModelRequired(requestType schemas.RequestType) bool {
 	// Here we will have to check for some requests which do not need model
-	// For example, batches, container, files requests
+	// For example, batches, container, files, videos, passthrough requests
 	// For these requests, we will only check for provider filtering
-	if requestType == schemas.ListModelsRequest || requestType == schemas.MCPToolExecutionRequest || requestType == schemas.BatchCreateRequest || requestType == schemas.BatchListRequest || requestType == schemas.BatchRetrieveRequest || requestType == schemas.BatchCancelRequest || requestType == schemas.BatchResultsRequest || requestType == schemas.FileUploadRequest || requestType == schemas.FileListRequest || requestType == schemas.FileRetrieveRequest || requestType == schemas.FileDeleteRequest || requestType == schemas.FileContentRequest || requestType == schemas.ContainerCreateRequest || requestType == schemas.ContainerListRequest || requestType == schemas.ContainerRetrieveRequest || requestType == schemas.ContainerDeleteRequest || requestType == schemas.ContainerFileCreateRequest || requestType == schemas.ContainerFileListRequest || requestType == schemas.ContainerFileRetrieveRequest || requestType == schemas.ContainerFileContentRequest || requestType == schemas.ContainerFileDeleteRequest {
+	if requestType == schemas.ListModelsRequest || requestType == schemas.MCPToolExecutionRequest || requestType == schemas.BatchCreateRequest || requestType == schemas.BatchListRequest || requestType == schemas.BatchRetrieveRequest || requestType == schemas.BatchCancelRequest || requestType == schemas.BatchResultsRequest || requestType == schemas.FileUploadRequest || requestType == schemas.FileListRequest || requestType == schemas.FileRetrieveRequest || requestType == schemas.FileDeleteRequest || requestType == schemas.FileContentRequest || requestType == schemas.ContainerCreateRequest || requestType == schemas.ContainerListRequest || requestType == schemas.ContainerRetrieveRequest || requestType == schemas.ContainerDeleteRequest || requestType == schemas.ContainerFileCreateRequest || requestType == schemas.ContainerFileListRequest || requestType == schemas.ContainerFileRetrieveRequest || requestType == schemas.ContainerFileContentRequest || requestType == schemas.ContainerFileDeleteRequest || requestType == schemas.VideoRetrieveRequest || requestType == schemas.VideoDownloadRequest || requestType == schemas.VideoListRequest || requestType == schemas.VideoDeleteRequest || requestType == schemas.VideoRemixRequest || requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest {
 		return false
 	}
 	return true
@@ -322,29 +322,37 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 	}
 }
 
-// isModelAllowed checks if the requested model is allowed for this VK
+// isModelAllowed checks if the requested model is allowed for this VK.
+// Blacklisted models win over allowed models (same semantics as provider-key enforcement).
+// Two-pass: blacklist scan across all matching configs first, then allowlist scan.
 func (r *BudgetResolver) isModelAllowed(vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, model string) bool {
 	// Empty ProviderConfigs means no models are allowed (deny-by-default)
 	if len(vk.ProviderConfigs) == 0 {
 		return false
 	}
 
+	// Pass 1: if any matching provider config blacklists the model, block immediately.
+	for _, pc := range vk.ProviderConfigs {
+		if pc.Provider == string(provider) && isModelBlockedByList(pc.BlacklistedModels, model) {
+			return false
+		}
+	}
+
+	// Pass 2: allowlist check — model is allowed if any matching config permits it.
 	for _, pc := range vk.ProviderConfigs {
 		if pc.Provider == string(provider) {
-			// Delegate model allowance check to model catalog
-			// This handles all cross-provider logic (OpenRouter, Vertex, Groq, Bedrock)
-			// and provider-prefixed allowed_models entries
 			if r.modelCatalog != nil && r.governanceInMemoryStore != nil {
 				providerConfig, ok := r.governanceInMemoryStore.GetConfiguredProviders()[provider]
 				providerConfigPtr := &providerConfig
 				if !ok {
 					providerConfigPtr = nil
 				}
-				return r.modelCatalog.IsModelAllowedForProvider(provider, model, providerConfigPtr, pc.AllowedModels)
+				if r.modelCatalog.IsModelAllowedForProvider(provider, model, providerConfigPtr, pc.AllowedModels) {
+					return true
+				}
+			} else if pc.AllowedModels.IsAllowed(model) {
+				return true
 			}
-			// Fallback when model catalog is not available: simple string matching
-			// ["*"] = allow all models; [] = deny all models
-			return pc.AllowedModels.IsAllowed(model)
 		}
 	}
 

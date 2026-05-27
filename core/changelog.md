@@ -1,10 +1,14 @@
-- feat: add Azure container API support
-- feat: add Anthropic computer use cross-provider parity across Anthropic, Bedrock, and Vertex
-- feat: add Gemini named content cache support
-- feat: add Bedrock structured-output fallback for Converse API
-- refactor: change `IsActive` and `Enabled` fields to pointer types with nil-as-default semantics
-- fix: backfill `Model` in embedding response when provider omits it
-- fix(bedrock): omit `toolChoice.tool` on Llama for synthetic structured-output tool (thanks [@ryan-orphic](https://github.com/ryan-orphic)!)
-- fix: namespace handling in `ResponseToolMessage` for cross-provider compatibility
-- fix: forward extra headers on responses websocket upstreams
-- fix: avoid provider update stalls under high load
+- feat: migrate Azure provider to the v1 API and remove `api_version` from `AzureKeyConfig` (#3661, #3756)
+- feat: add `ConfigMarshallerPlugin` interface so plugins can control config storage and redaction round-trips (#3651)
+- feat: forward `x-bf-eh-*` extra headers as `gen_ai.request.extra_header.*` span attributes (#3730)
+- feat: align OTel attribute keys with the GenAI semantic conventions spec; emit both legacy and canonical attributes (#3732)
+- fix: strip cache points from Bedrock requests for models that do not support prompt caching (#3754)
+- fix: skip empty/nil text blocks during Bedrock response conversion (#3747)
+- fix: preserve reasoning blocks alongside tool calls in the Bedrock chat converter (#3690)
+- fix: restore search content and video parts dropped from Bedrock passthrough requests (#3729)
+- fix: correct `tool_calls` finish reason when structured output is combined with extended-thinking tools (#3685)
+- fix: set `BifrostContextKeyConnectionClosed` before closing stream and short-circuit `idleTimeoutReader.Read` on closed connections (#3733)
+- fix: Gemini tool schema passthrough via `parametersJsonSchema`, correct tool response role to `user`, resolve structured output + tools conflict (#3761)
+- fix: normalize Anthropic stop reason mapping and upgrade computer-use tool versions to `text_editor_20250728` (#3761)
+- fix: Azure config redaction panic when `Endpoint` is a literal value (#3761)
+- chore: fix Bedrock transport tests (#3735)

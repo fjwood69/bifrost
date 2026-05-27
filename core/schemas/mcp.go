@@ -28,7 +28,8 @@ var (
 	ErrOAuth2RefreshFailed            = errors.New("oauth2 token refresh failed")
 	ErrOAuth2NotPerUserSession        = errors.New("state does not match a per-user oauth session")
 	ErrOAuth2TokenNotFound            = errors.New("per-user oauth token not found for this identity and mcp server")
-	ErrPerUserOAuthPendingFlowExpired = errors.New("per-user oauth pending flow has expired")
+	ErrOAuth2FlowNotPending           = errors.New("oauth flow is not in pending state")
+	ErrOAuth2FlowExpired              = errors.New("oauth flow has expired")
 	// ErrMCPReconnectNotApplicable signals that the reconnect operation is not
 	// meaningful for this client type — e.g. per-user OAuth clients, where
 	// each user manages their own auth and there is no shared upstream
@@ -119,12 +120,47 @@ func (c *MCPConfig) UnmarshalJSON(data []byte) error {
 }
 
 type MCPToolManagerConfig struct {
-	// ToolExecutionTimeout accepts a Go duration string (e.g. "30s", "2m") or an
-	// integer nanosecond value for backward compatibility.
+	// ToolExecutionTimeout accepts a Go duration string (e.g. "30s", "2m") or a
+	// bare integer treated as seconds (e.g. 30 → 30s). This intentionally differs
+	// from schemas.Duration, which treats bare integers as nanoseconds.
 	ToolExecutionTimeout  Duration             `json:"tool_execution_timeout"`
 	MaxAgentDepth         int                  `json:"max_agent_depth"`
 	CodeModeBindingLevel  CodeModeBindingLevel `json:"code_mode_binding_level,omitempty"`  // How tools are exposed in VFS: "server" or "tool"
 	DisableAutoToolInject bool                 `json:"disable_auto_tool_inject,omitempty"` // When true, MCP tools are not injected into requests by default
+}
+
+// UnmarshalJSON implements json.Unmarshaler so that tool_execution_timeout treats
+// bare integers as seconds (matching the schema description and user expectation)
+// rather than the nanosecond interpretation used by the underlying Duration type.
+func (c *MCPToolManagerConfig) UnmarshalJSON(data []byte) error {
+	// Use an alias to avoid infinite recursion, then fix up ToolExecutionTimeout.
+	type alias MCPToolManagerConfig
+	aux := &struct {
+		ToolExecutionTimeout *json.RawMessage `json:"tool_execution_timeout,omitempty"`
+		*alias
+	}{alias: (*alias)(c)}
+
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if aux.ToolExecutionTimeout == nil {
+		return nil
+	}
+
+	raw := *aux.ToolExecutionTimeout
+	// If it's a quoted string, delegate to the normal Duration parser ("30s", "2m", etc.)
+	if len(raw) > 0 && raw[0] == '"' {
+		return json.Unmarshal(raw, &c.ToolExecutionTimeout)
+	}
+
+	// Bare integer: treat as seconds (not nanoseconds).
+	var n int64
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return fmt.Errorf("invalid tool_execution_timeout: expected a duration string (e.g. \"30s\") or integer seconds: %w", err)
+	}
+	c.ToolExecutionTimeout = Duration(time.Duration(n) * time.Second)
+	return nil
 }
 
 const (

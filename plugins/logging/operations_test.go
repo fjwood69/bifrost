@@ -2,6 +2,7 @@ package logging
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -38,6 +39,199 @@ func newTestStore(t *testing.T) logstore.LogStore {
 		t.Fatalf("NewLogStore() error = %v", err)
 	}
 	return store
+}
+
+// TestMCPHooksDeferDBWriteUntilPostHookBatch verifies MCP logs are kept in
+// memory after PreMCPHook and persisted by the batch writer after PostMCPHook.
+func TestMCPHooksDeferDBWriteUntilPostHookBatch(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-mcp-batch")
+	ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-batch-flow")
+	ctx.SetValue(schemas.BifrostContextKeyUserID, "user-1")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, "team-1")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, "customer-1")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceBusinessUnitID, "bu-1")
+
+	toolName := "docs-search"
+	_, _, err = plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+		RequestType: schemas.MCPRequestTypeChatToolCall,
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+			Function: schemas.ChatAssistantMessageToolCallFunction{
+				Name:      &toolName,
+				Arguments: `{"query":"find this"}`,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreMCPHook() error = %v", err)
+	}
+
+	if _, err := store.FindMCPToolLog(context.Background(), "mcp-batch-flow"); !errors.Is(err, logstore.ErrNotFound) {
+		t.Fatalf("expected MCP log to stay in memory before PostMCPHook, got err=%v", err)
+	}
+
+	result := `{"answer":"done"}`
+	_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+		ChatMessage: &schemas.ChatMessage{
+			Role:    schemas.ChatMessageRoleTool,
+			Content: &schemas.ChatMessageContent{ContentStr: &result},
+		},
+		ExtraFields: schemas.BifrostMCPResponseExtraFields{
+			MCPRequestType: schemas.MCPRequestTypeChatToolCall,
+			ClientName:     "docs",
+			ToolName:       "search",
+			Latency:        42,
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("PostMCPHook() error = %v", err)
+	}
+
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	logEntry, err := store.FindMCPToolLog(context.Background(), "mcp-batch-flow")
+	if err != nil {
+		t.Fatalf("FindMCPToolLog() error = %v", err)
+	}
+	if logEntry.Status != "success" {
+		t.Fatalf("expected status success, got %q", logEntry.Status)
+	}
+	if logEntry.ArgumentsParsed == nil {
+		t.Fatalf("expected arguments to be persisted")
+	}
+	resultMap, ok := logEntry.ResultParsed.(map[string]interface{})
+	if !ok || resultMap["answer"] != "done" {
+		t.Fatalf("expected parsed result to be persisted, got %#v", logEntry.ResultParsed)
+	}
+	if logEntry.Latency == nil || *logEntry.Latency != 42 {
+		t.Fatalf("expected latency 42, got %#v", logEntry.Latency)
+	}
+	assertMCPLogGovernanceFields(t, logEntry, "user-1", "team-1", "customer-1", "bu-1")
+}
+
+// TestPostMCPHookFallbackStampsGovernanceFields verifies fallback MCP logs
+// created without a pending pre-hook entry still carry DAC ownership fields.
+func TestPostMCPHookFallbackStampsGovernanceFields(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-mcp-fallback")
+	ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-fallback-flow")
+	ctx.SetValue(schemas.BifrostContextKeyUserID, "user-fallback")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, "team-fallback")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, "customer-fallback")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceBusinessUnitID, "bu-fallback")
+
+	result := `{"answer":"fallback"}`
+	_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+		ChatMessage: &schemas.ChatMessage{
+			Role:    schemas.ChatMessageRoleTool,
+			Content: &schemas.ChatMessageContent{ContentStr: &result},
+		},
+		ExtraFields: schemas.BifrostMCPResponseExtraFields{
+			MCPRequestType: schemas.MCPRequestTypeChatToolCall,
+			ClientName:     "docs",
+			ToolName:       "search",
+			Latency:        7,
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("PostMCPHook() error = %v", err)
+	}
+
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	logEntry, err := store.FindMCPToolLog(context.Background(), "mcp-fallback-flow")
+	if err != nil {
+		t.Fatalf("FindMCPToolLog() error = %v", err)
+	}
+	assertMCPLogGovernanceFields(t, logEntry, "user-fallback", "team-fallback", "customer-fallback", "bu-fallback")
+}
+
+// TestCleanupStalePendingMCPLogsPersistsErrorFallback verifies stale pending
+// MCP logs are committed as terminal errors instead of being silently dropped.
+func TestCleanupStalePendingMCPLogsPersistsErrorFallback(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	staleCreatedAt := time.Now().Add(-pendingLogTTL - time.Minute)
+	plugin.pendingMCPLogsToInject.Store("mcp-stale", &logstore.MCPToolLog{
+		ID:          "mcp-stale",
+		RequestID:   "req-stale",
+		Timestamp:   staleCreatedAt,
+		ToolName:    "search",
+		ServerLabel: "docs",
+		Status:      "processing",
+		CreatedAt:   staleCreatedAt,
+		ArgumentsParsed: map[string]interface{}{
+			"query": "stale input",
+		},
+	})
+
+	plugin.cleanupStalePendingLogs()
+
+	if _, ok := plugin.pendingMCPLogsToInject.Load("mcp-stale"); ok {
+		t.Fatal("expected stale MCP pending log to be removed from memory")
+	}
+	if _, err := store.FindMCPToolLog(context.Background(), "mcp-stale"); !errors.Is(err, logstore.ErrNotFound) {
+		t.Fatalf("expected stale MCP log to be queued before batch flush, got err=%v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	logEntry, err := store.FindMCPToolLog(context.Background(), "mcp-stale")
+	if err != nil {
+		t.Fatalf("FindMCPToolLog() error = %v", err)
+	}
+	if logEntry.Status != "error" {
+		t.Fatalf("expected status error, got %q", logEntry.Status)
+	}
+	if logEntry.ArgumentsParsed == nil {
+		t.Fatal("expected stale MCP input arguments to be persisted")
+	}
+	if logEntry.ResultParsed != nil || logEntry.Result != "" {
+		t.Fatalf("expected stale MCP log to have no result, got parsed=%#v raw=%q", logEntry.ResultParsed, logEntry.Result)
+	}
+	if logEntry.ErrorDetailsParsed == nil || logEntry.ErrorDetailsParsed.Error == nil {
+		t.Fatalf("expected stale MCP error details, got %#v", logEntry.ErrorDetailsParsed)
+	}
+	if !strings.Contains(logEntry.ErrorDetailsParsed.Error.Message, "pending log TTL") {
+		t.Fatalf("expected stale MCP timeout message, got %q", logEntry.ErrorDetailsParsed.Error.Message)
+	}
+}
+
+func assertMCPLogGovernanceFields(t *testing.T, logEntry *logstore.MCPToolLog, userID, teamID, customerID, businessUnitID string) {
+	t.Helper()
+	if logEntry.UserID == nil || *logEntry.UserID != userID {
+		t.Fatalf("expected user_id %q, got %#v", userID, logEntry.UserID)
+	}
+	if logEntry.TeamID == nil || *logEntry.TeamID != teamID {
+		t.Fatalf("expected team_id %q, got %#v", teamID, logEntry.TeamID)
+	}
+	if logEntry.CustomerID == nil || *logEntry.CustomerID != customerID {
+		t.Fatalf("expected customer_id %q, got %#v", customerID, logEntry.CustomerID)
+	}
+	if logEntry.BusinessUnitID == nil || *logEntry.BusinessUnitID != businessUnitID {
+		t.Fatalf("expected business_unit_id %q, got %#v", businessUnitID, logEntry.BusinessUnitID)
+	}
 }
 
 func TestUpdateLogEntryPreservesResponsesInputContentSummary(t *testing.T) {
@@ -647,10 +841,10 @@ func TestContentLoggingEnabledHelper(t *testing.T) {
 	boolPtr := func(b bool) *bool { return &b }
 
 	tests := []struct {
-		name                  string
-		globalDisable         *bool
-		ctxOverride           *bool // nil = don't set the key
-		want                  bool
+		name          string
+		globalDisable *bool
+		ctxOverride   *bool // nil = don't set the key
+		want          bool
 	}{
 		{"no config no override → enabled", nil, nil, true},
 		{"global disable=false no override → enabled", boolPtr(false), nil, true},

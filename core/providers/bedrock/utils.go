@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	"github.com/tidwall/sjson"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
@@ -17,19 +18,44 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
+// awsRegionRegex matches valid AWS region identifiers (e.g. "us-east-1", "eu-north-1", "us-gov-east-1").
+// (?:-[a-z]+)+ allows multi-segment directional parts so GovCloud regions (us-gov-east-1) are
+// recognised alongside standard single-segment ones (eu-north-1, ap-southeast-2).
+var awsRegionRegex = regexp.MustCompile(`^[a-z]{2,3}(?:-[a-z]+)+-\d+$`)
+
+// parseBedrockRegionAndModel splits a model string that optionally carries an AWS region prefix
+// into its region and bare model ID components.
+// If no region prefix is present the returned region is empty and bareModel equals model.
+func parseBedrockRegionAndModel(model string) (region, bareModel string) {
+	if idx := strings.IndexByte(model, '/'); idx > 0 {
+		prefix := model[:idx]
+		if awsRegionRegex.MatchString(prefix) {
+			return prefix, model[idx+1:]
+		}
+	}
+	return "", model
+}
+
 var (
 	invalidCharRegex = regexp.MustCompile(`[^a-zA-Z0-9\s\-\(\)\[\]]`)
 	multiSpaceRegex  = regexp.MustCompile(`\s{2,}`)
 
 	// bedrockFinishReasonToBifrost maps Bedrock Converse API stop reasons to Bifrost format.
-	// Bedrock has additional stop reasons beyond Anthropic (guardrail_intervened, content_filtered).
+	// Unmappable reasons (e.g. guardrail_intervened) are passed through as-is.
 	bedrockFinishReasonToBifrost = map[string]string{
-		"end_turn":             "stop",
-		"max_tokens":           "length",
-		"stop_sequence":        "stop",
-		"tool_use":             "tool_calls",
-		"guardrail_intervened": "content_filter",
-		"content_filtered":     "content_filter",
+		"end_turn":         "stop",
+		"max_tokens":       "length",
+		"stop_sequence":    "stop",
+		"tool_use":         "tool_calls",
+		"content_filtered": "content_filter",
+	}
+
+	// bifrostToBedrockStopReason is the reverse of bedrockFinishReasonToBifrost.
+	bifrostToBedrockStopReason = map[string]string{
+		"stop":           "end_turn",
+		"length":         "max_tokens",
+		"tool_calls":     "tool_use",
+		"content_filter": "content_filtered",
 	}
 )
 
@@ -38,7 +64,44 @@ func convertBedrockStopReason(stopReason string) string {
 	if reason, ok := bedrockFinishReasonToBifrost[stopReason]; ok {
 		return reason
 	}
-	return "stop"
+	return stopReason
+}
+
+// convertBifrostToBedrockStopReason converts a Bifrost stop reason back to Bedrock format.
+func convertBifrostToBedrockStopReason(bifrostReason string) string {
+	if reason, ok := bifrostToBedrockStopReason[bifrostReason]; ok {
+		return reason
+	}
+	return bifrostReason
+}
+
+// mapBifrostServiceTierToBedrock maps a BifrostServiceTier to a BedrockServiceTierType.
+func mapBifrostServiceTierToBedrock(tier schemas.BifrostServiceTier) BedrockServiceTierType {
+	switch tier {
+	case schemas.BifrostServiceTierPriority:
+		return BedrockServiceTierTypePriority
+	case schemas.BifrostServiceTierFlex:
+		return BedrockServiceTierTypeFlex
+	case schemas.BifrostServiceTierDefault, schemas.BifrostServiceTierAuto:
+		return BedrockServiceTierTypeDefault
+	default:
+		return BedrockServiceTierType(tier)
+	}
+}
+
+// mapBedrockServiceTierToBifrost maps a BedrockServiceTierType to a BifrostServiceTier.
+// "reserved" maps to priority as it represents pre-purchased priority capacity.
+func mapBedrockServiceTierToBifrost(tier BedrockServiceTierType) schemas.BifrostServiceTier {
+	switch tier {
+	case BedrockServiceTierTypePriority:
+		return schemas.BifrostServiceTierPriority
+	case BedrockServiceTierTypeFlex:
+		return schemas.BifrostServiceTierFlex
+	case BedrockServiceTierTypeDefault:
+		return schemas.BifrostServiceTierDefault
+	default:
+		return schemas.BifrostServiceTier(tier)
+	}
 }
 
 // normalizeBedrockFilename normalizes a filename to meet Bedrock's requirements:
@@ -187,7 +250,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 
 				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", config)
 			} else {
-				bedrockReq.AdditionalModelRequestFields.Set("reasoning_config", map[string]any{
+				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
 					"type":          "enabled",
 					"budget_tokens": tokenBudget,
 				})
@@ -234,9 +297,16 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 				if anthropic.SupportsAdaptiveThinking(bifrostReq.Model) {
 					// Opus 4.6+: adaptive thinking + output_config.effort
 					effort := anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
-					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+					thinkingConfig := map[string]any{
 						"type": "adaptive",
-					})
+					}
+					if bifrostReq.Params.Reasoning.Display != nil {
+						thinkingConfig["display"] = *bifrostReq.Params.Reasoning.Display
+					} else if anthropic.IsOpus47(bifrostReq.Model) {
+						// Opus 4.7+ omits reasoning text by default; default to "summarized"
+						thinkingConfig["display"] = "summarized"
+					}
+					bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 					setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "effort", effort)
 				} else {
 					// Opus 4.5 and older models: budget_tokens thinking
@@ -260,7 +330,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					"type": "disabled",
 				})
 			} else {
-				bedrockReq.AdditionalModelRequestFields.Set("reasoning_config", map[string]any{
+				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
 					"type": "disabled",
 				})
 			}
@@ -285,7 +355,10 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		// and the langchain-aws ChatBedrockConverse implementation at
 		// https://github.com/langchain-ai/langchain-aws/blob/main/libs/aws/langchain_aws/chat_models/bedrock_converse.py
 		// (supports_tool_choice_values), which ships the same model-family gate.
-		if !schemas.IsLlamaModel(bifrostReq.Model) {
+		thinkingEnabled := bifrostReq.Params.Reasoning != nil &&
+			(bifrostReq.Params.Reasoning.MaxTokens != nil ||
+				(bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none"))
+		if !schemas.IsLlamaModel(bifrostReq.Model) && !thinkingEnabled {
 			bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
 				Tool: &BedrockToolChoiceTool{
 					Name: responseFormatTool.ToolSpec.Name,
@@ -295,7 +368,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	}
 	if bifrostReq.Params.ServiceTier != nil {
 		bedrockReq.ServiceTier = &BedrockServiceTier{
-			Type: *bifrostReq.Params.ServiceTier,
+			Type: mapBifrostServiceTierToBedrock(*bifrostReq.Params.ServiceTier),
 		}
 	}
 	// Add extra parameters
@@ -563,10 +636,23 @@ func convertMessages(ctx context.Context, bifrostMessages []schemas.ChatMessage)
 	var messages []BedrockMessage
 	var systemMessages []BedrockSystemMessage
 
+	// if only system / developer message is there, convert it to user message (since openai allows it)
+	if len(bifrostMessages) == 1 && (bifrostMessages[0].Role == schemas.ChatMessageRoleSystem || bifrostMessages[0].Role == schemas.ChatMessageRoleDeveloper) {
+		msg := bifrostMessages[0]
+		msg.Role = schemas.ChatMessageRoleUser
+		bedrockMsg, err := convertMessage(ctx, msg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to convert message: %w", err)
+		}
+		if len(bedrockMsg.Content) > 0 {
+			return []BedrockMessage{bedrockMsg}, nil, nil
+		}
+	}
+
 	for i := 0; i < len(bifrostMessages); i++ {
 		msg := bifrostMessages[i]
 		switch msg.Role {
-		case schemas.ChatMessageRoleSystem:
+		case schemas.ChatMessageRoleSystem, schemas.ChatMessageRoleDeveloper:
 			// Convert system message
 			systemMsgs, err := convertSystemMessages(msg)
 			if err != nil {
@@ -657,25 +743,9 @@ func convertMessage(ctx context.Context, msg schemas.ChatMessage) (BedrockMessag
 		Role: BedrockMessageRole(msg.Role),
 	}
 
-	// Convert content
 	var contentBlocks []BedrockContentBlock
-	if msg.Content != nil {
-		var err error
-		contentBlocks, err = convertContent(ctx, *msg.Content)
-		if err != nil {
-			return BedrockMessage{}, fmt.Errorf("failed to convert content: %w", err)
-		}
-	}
 
-	// Add tool calls if present (for assistant messages)
-	if msg.ChatAssistantMessage != nil && msg.ChatAssistantMessage.ToolCalls != nil {
-		for _, toolCall := range msg.ChatAssistantMessage.ToolCalls {
-			toolUseBlock := convertToolCallToContentBlock(toolCall)
-			contentBlocks = append(contentBlocks, toolUseBlock)
-		}
-	}
-
-	// Add reasoning content if present (for multi-turn conversations with thinking)
+	// Add reasoning content first
 	if msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ReasoningDetails) > 0 {
 		for _, detail := range msg.ChatAssistantMessage.ReasoningDetails {
 			if detail.Type == schemas.BifrostReasoningDetailsTypeText {
@@ -688,6 +758,22 @@ func convertMessage(ctx context.Context, msg schemas.ChatMessage) (BedrockMessag
 					},
 				})
 			}
+		}
+	}
+
+	// Convert text/image content
+	if msg.Content != nil {
+		textBlocks, err := convertContent(ctx, *msg.Content)
+		if err != nil {
+			return BedrockMessage{}, fmt.Errorf("failed to convert content: %w", err)
+		}
+		contentBlocks = append(contentBlocks, textBlocks...)
+	}
+
+	// Add tool calls last (for assistant messages)
+	if msg.ChatAssistantMessage != nil && msg.ChatAssistantMessage.ToolCalls != nil {
+		for _, toolCall := range msg.ChatAssistantMessage.ToolCalls {
+			contentBlocks = append(contentBlocks, convertToolCallToContentBlock(toolCall))
 		}
 	}
 
@@ -1784,8 +1870,8 @@ func convertToolCallToContentBlock(toolCall schemas.ChatAssistantMessageToolCall
 		if err := json.Compact(&buf, []byte(args)); err == nil {
 			input = buf.Bytes()
 		} else {
-			// Preserve original payload instead of silently dropping args.
-			input = json.RawMessage([]byte(args))
+			// invalid json recieved
+			input = json.RawMessage("{}")
 		}
 	}
 
@@ -2033,6 +2119,45 @@ func bedrockExtractFloat64(v interface{}) (float64, bool) {
 	}
 }
 
+// bedrockToolResultEnvelopeKey marks a sentinel-wrapped JSON string that carries a full
+// BedrockToolResult.Content array through Bifrost's intermediate format. Used when the
+// content includes blocks (e.g. searchResult) that the intermediate cannot model natively,
+// so they round-trip losslessly on the Bedrock-native passthrough endpoint.
+const bedrockToolResultEnvelopeKey = "__bifrost_bedrock_tool_result_content__"
+
+// encodeBedrockToolResultEnvelope serializes a BedrockToolResult.Content array into a
+// sentinel-wrapped JSON object that decodeBedrockToolResultEnvelope can recover.
+func encodeBedrockToolResultEnvelope(content []BedrockContentBlock) (string, error) {
+	envelope := map[string]any{bedrockToolResultEnvelopeKey: content}
+	b, err := sonic.Marshal(envelope)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// decodeBedrockToolResultEnvelope is the inverse of encodeBedrockToolResultEnvelope.
+// Returns (blocks, true) if s is a sentinel-wrapped tool-result envelope; (nil, false) otherwise.
+// Non-envelope strings are returned untouched so the caller can fall through to tryParseJSONIntoContentBlock.
+func decodeBedrockToolResultEnvelope(s string) ([]BedrockContentBlock, bool) {
+	if len(s) == 0 || s[0] != '{' || !strings.Contains(s, bedrockToolResultEnvelopeKey) {
+		return nil, false
+	}
+	var envelope map[string]json.RawMessage
+	if err := sonic.UnmarshalString(s, &envelope); err != nil {
+		return nil, false
+	}
+	raw, ok := envelope[bedrockToolResultEnvelopeKey]
+	if !ok || len(envelope) != 1 {
+		return nil, false
+	}
+	var blocks []BedrockContentBlock
+	if err := sonic.Unmarshal(raw, &blocks); err != nil {
+		return nil, false
+	}
+	return blocks, true
+}
+
 // tryParseJSONIntoContentBlock try to parse input text into a JSON and returns a proper
 // BedrockContentBlock based on the result.
 func tryParseJSONIntoContentBlock(text string) BedrockContentBlock {
@@ -2061,5 +2186,58 @@ func tryParseJSONIntoContentBlock(text string) BedrockContentBlock {
 		wrapped = append(wrapped, compacted...)
 		wrapped = append(wrapped, '}')
 		return BedrockContentBlock{JSON: json.RawMessage(wrapped)}
+	}
+}
+
+// stripCachePointsFromBedrockRequest removes all CachePoint blocks from a
+// BedrockConverseRequest. Called for models that don't support prompt caching
+// (e.g. GLM, Llama) so their requests don't get a 400 from the Converse API.
+func stripCachePointsFromBedrockRequest(req *BedrockConverseRequest) {
+	// Strip cache points from message content blocks (including nested tool results).
+	for i := range req.Messages {
+		content := req.Messages[i].Content
+		n := 0
+		for j := range content {
+			if content[j].CachePoint != nil {
+				continue
+			}
+			if content[j].ToolResult != nil {
+				inner := content[j].ToolResult.Content
+				m := 0
+				for k := range inner {
+					if inner[k].CachePoint == nil {
+						inner[m] = inner[k]
+						m++
+					}
+				}
+				content[j].ToolResult.Content = inner[:m]
+			}
+			content[n] = content[j]
+			n++
+		}
+		req.Messages[i].Content = content[:n]
+	}
+	// Strip cache points from system messages.
+	// Filter out entries that were cache-point-only (would become empty objects).
+	ns := 0
+	for i := range req.System {
+		req.System[i].CachePoint = nil
+		if req.System[i].Text != nil || req.System[i].GuardContent != nil {
+			req.System[ns] = req.System[i]
+			ns++
+		}
+	}
+	req.System = req.System[:ns]
+	// Strip cache points from tools.
+	if req.ToolConfig != nil {
+		nt := 0
+		for i := range req.ToolConfig.Tools {
+			req.ToolConfig.Tools[i].CachePoint = nil
+			if req.ToolConfig.Tools[i].ToolSpec != nil || req.ToolConfig.Tools[i].SystemTool != nil {
+				req.ToolConfig.Tools[nt] = req.ToolConfig.Tools[i]
+				nt++
+			}
+		}
+		req.ToolConfig.Tools = req.ToolConfig.Tools[:nt]
 	}
 }

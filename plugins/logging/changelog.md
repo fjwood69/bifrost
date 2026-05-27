@@ -1,2 +1,2 @@
-- fix: streaming error log handling
-- chore: upgraded core to v1.5.8 and framework to v1.3.8
+- fix: drain pending log entries on `Cleanup` to avoid dropping in-flight batches at shutdown; bounded 30s drain budget (#3717)
+- refactor: `GetAvailable*` methods now return wrapped errors instead of silently logging and returning empty slices (#3759)

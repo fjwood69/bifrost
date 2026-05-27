@@ -1,1 +1,2 @@
-- chore: upgraded core to v1.5.8 and framework to v1.3.8
+- feat: handle OpenAI Responses API streaming (`ResponsesStreamRequest`) in addition to chat completions (#3749)
+- chore: added `Params` with `json_object` format to the Responses stream end-to-end test (#3761)

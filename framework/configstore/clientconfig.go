@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"hash"
 	"maps"
+	"math"
 	"sort"
 	"strconv"
 
@@ -43,6 +44,25 @@ type CompatConfig struct {
 	ShouldConvertParams    bool `json:"should_convert_params"`
 }
 
+// UnmarshalJSON defaults all bool fields to true when absent from JSON.
+func (c *CompatConfig) UnmarshalJSON(data []byte) error {
+	type compatConfig struct {
+		ConvertTextToChat      *bool `json:"convert_text_to_chat"`
+		ConvertChatToResponses *bool `json:"convert_chat_to_responses"`
+		ShouldDropParams       *bool `json:"should_drop_params"`
+		ShouldConvertParams    *bool `json:"should_convert_params"`
+	}
+	var s compatConfig
+	if err := sonic.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	c.ConvertTextToChat = s.ConvertTextToChat == nil || *s.ConvertTextToChat
+	c.ConvertChatToResponses = s.ConvertChatToResponses == nil || *s.ConvertChatToResponses
+	c.ShouldDropParams = s.ShouldDropParams == nil || *s.ShouldDropParams
+	c.ShouldConvertParams = s.ShouldConvertParams == nil || *s.ShouldConvertParams
+	return nil
+}
+
 // ClientConfig represents the core configuration for Bifrost HTTP transport and the Bifrost Client.
 // It includes settings for excess request handling, Prometheus metrics, and initial pool size.
 type ClientConfig struct {
@@ -67,6 +87,7 @@ type ClientConfig struct {
 	MCPCodeModeBindingLevel               string                           `json:"mcp_code_mode_binding_level"`          // Code mode binding level: "server" or "tool"
 	MCPToolSyncInterval                   int                              `json:"mcp_tool_sync_interval"`               // Global tool sync interval in minutes (default: 10, 0 = disabled)
 	MCPDisableAutoToolInject              bool                             `json:"mcp_disable_auto_tool_inject"`         // When true, MCP tools are not injected into requests by default
+	MCPEnableTempTokenAuth                bool                             `json:"mcp_enable_temp_token_auth"`           // When true, scoped temp tokens can authorize MCP per-user OAuth pages
 	HeaderFilterConfig                    *tables.GlobalHeaderFilterConfig `json:"header_filter_config,omitempty"`       // Global header filtering configuration for x-bf-eh-* headers
 	AsyncJobResultTTL                     int                              `json:"async_job_result_ttl"`                 // Default TTL for async job results in seconds (default: 3600 = 1 hour)
 	RequiredHeaders                       []string                         `json:"required_headers,omitempty"`           // Headers that must be present on every request (case-insensitive)
@@ -74,9 +95,26 @@ type ClientConfig struct {
 	WhitelistedRoutes                     []string                         `json:"whitelisted_routes,omitempty"`         // Routes that bypass auth middleware
 	HideDeletedVirtualKeysInFilters       bool                             `json:"hide_deleted_virtual_keys_in_filters"` // Hide deleted virtual keys from logs/MCP filter data
 	RoutingChainMaxDepth                  int                              `json:"routing_chain_max_depth"`              // Maximum depth for routing rule chain evaluation (default: 10)
-	MCPExternalServerURL                  *schemas.EnvVar                  `json:"mcp_external_server_url,omitempty"`    // Public base URL advertised in OAuth server metadata (.well-known, WWW-Authenticate). Supports env var syntax ("env.MY_VAR")
 	MCPExternalClientURL                  *schemas.EnvVar                  `json:"mcp_external_client_url,omitempty"`    // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
 	ConfigHash                            string                           `json:"-"`                                    // Config hash for reconciliation (not serialized)
+}
+
+// UnmarshalJSON defaults all bool fields to true when absent from JSON.
+func (c *ClientConfig) UnmarshalJSON(data []byte) error {
+	type ClientConfigAlias ClientConfig
+	alias := ClientConfigAlias{
+		Compat: CompatConfig{
+			ConvertTextToChat:      true,
+			ConvertChatToResponses: true,
+			ShouldDropParams:       true,
+			ShouldConvertParams:    true,
+		},
+	}
+	if err := sonic.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*c = ClientConfig(alias)
+	return nil
 }
 
 // GenerateClientConfigHash generates a SHA256 hash of the client configuration.
@@ -169,6 +207,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 	if c.MCPDisableAutoToolInject {
 		hash.Write([]byte("mcpDisableAutoToolInject:true"))
+	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.MCPEnableTempTokenAuth {
+		hash.Write([]byte("mcpEnableTempTokenAuth:true"))
 	}
 
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
@@ -308,14 +351,6 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		}
 	}
 
-	if c.MCPExternalServerURL.IsSet() {
-		if c.MCPExternalServerURL.IsFromEnv() {
-			hash.Write([]byte("externalServerURL:env:" + c.MCPExternalServerURL.EnvVar))
-		} else {
-			hash.Write([]byte("externalServerURL:val:" + c.MCPExternalServerURL.GetValue()))
-		}
-	}
-
 	if c.MCPExternalClientURL.IsSet() {
 		if c.MCPExternalClientURL.IsFromEnv() {
 			hash.Write([]byte("externalClientURL:env:" + c.MCPExternalClientURL.EnvVar))
@@ -327,12 +362,30 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+// GenerateClientConfigHashWithToolManager extends GenerateClientConfigHash to also cover
+// the mcp.tool_manager_config file section. When tm is nil it returns the same value as
+// GenerateClientConfigHash, so it is safe to call unconditionally.
+func (c *ClientConfig) GenerateClientConfigHashWithToolManager(tm *schemas.MCPToolManagerConfig) (string, error) {
+	base, err := c.GenerateClientConfigHash()
+	if err != nil || tm == nil {
+		return base, err
+	}
+	h := sha256.New()
+	h.Write([]byte(base))
+	h.Write([]byte("toolMgrAgentDepth:" + strconv.Itoa(tm.MaxAgentDepth)))
+	h.Write([]byte("toolMgrTimeout:" + strconv.FormatInt(int64(math.Ceil(tm.ToolExecutionTimeout.D().Seconds())), 10)))
+	h.Write([]byte("toolMgrCodeMode:" + string(tm.CodeModeBindingLevel)))
+	if tm.DisableAutoToolInject {
+		h.Write([]byte("toolMgrDisableAutoInject:true"))
+	} else {
+		h.Write([]byte("toolMgrDisableAutoInject:false"))
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 // Redacted returns a copy of ClientConfig with any env-backed EnvVar fields masked.
 func (c *ClientConfig) Redacted() ClientConfig {
 	out := *c
-	if c.MCPExternalServerURL != nil && c.MCPExternalServerURL.IsFromEnv() {
-		out.MCPExternalServerURL = c.MCPExternalServerURL.Redacted()
-	}
 	if c.MCPExternalClientURL != nil && c.MCPExternalClientURL.IsFromEnv() {
 		out.MCPExternalClientURL = c.MCPExternalClientURL.Redacted()
 	}
@@ -421,11 +474,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		// Redact Azure key config if present
 		if key.AzureKeyConfig != nil {
 			azureConfig := &schemas.AzureKeyConfig{}
-			azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.Redacted()
-			if key.AzureKeyConfig.APIVersion != nil && key.AzureKeyConfig.APIVersion.IsFromEnv() {
-				azureConfig.APIVersion = key.AzureKeyConfig.APIVersion.Redacted()
+			if key.AzureKeyConfig.Endpoint.IsFromEnv() {
+				azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.Redacted()
 			} else {
-				azureConfig.APIVersion = key.AzureKeyConfig.APIVersion
+				azureConfig.Endpoint = key.AzureKeyConfig.Endpoint
 			}
 			if key.AzureKeyConfig.ClientID != nil {
 				azureConfig.ClientID = key.AzureKeyConfig.ClientID.Redacted()
@@ -1284,6 +1336,28 @@ func GeneratePluginHash(p tables.TablePlugin) (string, error) {
 	hash.Write(data)
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// frameworkConfigHashPayload holds the config.json-sourced fields used for hashing.
+type frameworkConfigHashPayload struct {
+	PricingURL          *string `json:"pricing_url"`
+	ModelParametersURL  *string `json:"model_parameters_url"`
+	PricingSyncInterval *int64  `json:"pricing_sync_interval"`
+}
+
+// GenerateFrameworkConfigHash generates a SHA256 hash for a framework config.
+// This is used to detect changes to framework config between config.json and database.
+func GenerateFrameworkConfigHash(pricingURL *string, modelParametersURL *string, pricingSyncInterval *int64) (string, error) {
+	data, err := sonic.Marshal(frameworkConfigHashPayload{
+		PricingURL:          pricingURL,
+		ModelParametersURL:  modelParametersURL,
+		PricingSyncInterval: pricingSyncInterval,
+	})
+	if err != nil {
+		return "", err
+	}
+	h := sha256.Sum256(data)
+	return hex.EncodeToString(h[:]), nil
 }
 
 // AuthConfig represents configured auth config for Bifrost dashboard
