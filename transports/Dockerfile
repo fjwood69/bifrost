@@ -34,6 +34,10 @@
   COPY transports/ ./transports/
   
   RUN go mod download
+
+  # Pin transitive CVE fixes without modifying upstream go.mod files
+  RUN cd framework && go get google.golang.org/grpc@v1.79.3 && cd /app && \
+    cd transports && go get google.golang.org/grpc@v1.79.3 && cd /app
   
   COPY --from=ui-builder /app/out ./transports/bifrost-http/ui
   

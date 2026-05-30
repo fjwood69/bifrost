@@ -6,7 +6,7 @@ require (
 	cloud.google.com/go v0.123.0
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
-	github.com/andybalholm/brotli v1.2.0
+	github.com/andybalholm/brotli v1.2.1
 	github.com/aws/aws-sdk-go-v2 v1.41.7
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.10
 	github.com/aws/aws-sdk-go-v2/config v1.32.11
@@ -18,13 +18,13 @@ require (
 	github.com/fasthttp/websocket v1.5.12
 	github.com/google/uuid v1.6.0
 	github.com/hajimehoshi/go-mp3 v0.3.4
-	github.com/klauspost/compress v1.18.2
+	github.com/klauspost/compress v1.18.5
 	github.com/mark3labs/mcp-go v0.43.2
 	github.com/rs/zerolog v1.34.0
 	github.com/stretchr/testify v1.11.1
 	github.com/tidwall/gjson v1.18.0
 	github.com/tidwall/sjson v1.2.5
-	github.com/valyala/fasthttp v1.68.0
+	github.com/valyala/fasthttp v1.70.0
 	go.starlark.net v0.0.0-20260102030733-3fee463870c9
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/text v0.35.0

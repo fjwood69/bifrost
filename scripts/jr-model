@@ -58,7 +58,9 @@ MODELS = [
     ("glm51",       "Novita/zai-org/glm-5.1",                       "GLM 5.1",            ""),
     ("gemma4-26b",      "parasail/google/gemma-4-26B-A4B-it",           "Gemma 4 26B A4B it", ""),
     ("gemma4-31b",      "parasail/google/gemma-4-31B-it",           "Gemma 4 31B it", ""),
-    ("gemini",      "gemini/gemini-3-flash-preview",                 "Gemini 3 Flash",     "1M ctx"),
+    ("gemini",      "gemini/gemini-3.5-flash",                         "Gemini 3.5 Flash",   "1M ctx"),
+    ("mimo-pro",    "Deepinfra/XiaomiMiMo/MiMo-V2.5-Pro",             "MiMo V2.5 Pro",       ""),
+    ("mimo",        "Deepinfra/XiaomiMiMo/MiMo-V2.5",                 "MiMo V2.5",           ""),
     ("nemotron",    "nebius/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", "Nemotron 3 Nano",    ""),
 ]
 

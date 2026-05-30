@@ -103,7 +103,7 @@ Bifrost can proxy external MCP servers over SSE, making their tools available to
 └────────────┘     └──────────┘     └──────────────┘
 ```
 
-The proxy registers servers in Bifrost's configuration by transport type and URL. On each MCP tools/list call, Bifrost aggregates tools from all registered servers and prefixes them with the server name (e.g. `moku_advisor-memory_list`). Requests are routed back to the originating server by matching the prefix.
+The proxy registers servers in Bifrost's configuration by transport type and URL. On each MCP tools/list call, Bifrost aggregates tools from all registered servers and prefixes them with the server name (e.g. `mori_advisor-memory_list`). Requests are routed back to the originating server by matching the prefix.
 
 This avoids per-client MCP server configuration — any client connected to Bifrost automatically gets all proxied tools.
 

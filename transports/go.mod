@@ -3,14 +3,14 @@ module github.com/maximhq/bifrost/transports
 go 1.26.2
 
 require (
-	github.com/andybalholm/brotli v1.2.0
+	github.com/andybalholm/brotli v1.2.1
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.10
 	github.com/bytedance/sonic v1.15.0
 	github.com/fasthttp/router v1.5.4
 	github.com/fasthttp/websocket v1.5.12
 	github.com/google/pprof v0.0.0-20251213031049-b05bdaca462f
 	github.com/google/uuid v1.6.0
-	github.com/klauspost/compress v1.18.2
+	github.com/klauspost/compress v1.18.5
 	github.com/mark3labs/mcp-go v0.43.2
 	github.com/maximhq/bifrost/core v1.5.13
 	github.com/maximhq/bifrost/framework v1.3.13
@@ -29,7 +29,7 @@ require (
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/stretchr/testify v1.11.1
 	github.com/tidwall/gjson v1.18.0
-	github.com/valyala/fasthttp v1.68.0
+	github.com/valyala/fasthttp v1.70.0
 	go.uber.org/automaxprocs v1.6.0
 	golang.org/x/sync v0.20.0
 	gorm.io/driver/sqlite v1.6.0
