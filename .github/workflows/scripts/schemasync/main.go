@@ -65,11 +65,42 @@ var ignoreSchemaProps = map[string]string{
 	"/properties/logs_store/properties/object_storage/properties/region":     "not a secret; env.X + envFrom pattern",
 	"/properties/logs_store/properties/object_storage/properties/endpoint":   "not a secret; env.X + envFrom pattern",
 	"/properties/logs_store/properties/object_storage/properties/project_id": "not a secret; env.X + envFrom pattern",
+	// Enterprise-only top-level fields: schema documents them for enterprise
+	// deployments; OSS ConfigData struct does not carry these fields.
+	"/properties/access_profiles":            "enterprise-only; defined in bifrost-enterprise/lib/config.go",
+	"/properties/audit_logs":                 "enterprise-only; defined in bifrost-enterprise/lib/config.go",
+	"/properties/cluster_config":             "enterprise-only; defined in bifrost-enterprise/lib/config.go",
+	"/properties/guardrails_config":          "enterprise-only; defined in bifrost-enterprise/lib/config.go",
+	"/properties/large_payload_optimization": "enterprise-only; defined in bifrost-enterprise/lib/config.go",
+	"/properties/load_balancer_config":       "enterprise-only; defined in bifrost-enterprise/lib/config.go",
+	"/properties/scim_config":                "enterprise-only; defined in bifrost-enterprise/lib/config.go",
+	// Enterprise governance extensions not yet in OSS structs.
+	"/properties/governance/properties/business_units":                          "enterprise-only; business unit governance",
+	"/properties/governance/properties/teams/items/properties/business_unit_id": "enterprise-only; team→business unit association",
+	// Stale schema field: TableTeam uses a budgets[] relationship (team_id FK on
+	// TableBudget), never a singular budget_id foreign key.
+	"/properties/governance/properties/teams/items/properties/budget_id": "stale; teams use budgets[] relation not budget_id",
+	// MCP tool groups are an enterprise governance feature; OSS MCPConfig has no tool_groups field.
+	"/properties/mcp/properties/tool_groups": "enterprise-only; MCP tool group governance",
 }
 
 // ignoreGoFields keys are "schemaPath|fieldName"; value is the reason.
 var ignoreGoFields = map[string]string{
 	"|auth_config": "deprecated; moved to governance.auth_config",
+	// provider_key_id is the internal DB column resolved from provider_key_name at config load time;
+	// schema documents only the human-readable provider_key_name alias.
+	"/properties/governance/properties/pricing_overrides/items|provider_key_id": "internal DB column; config uses provider_key_name alias instead",
+	// oauth_client_id / oauth_client_secret are response-only fields on MCPClientConfig:
+	// populated on GET from the oauth_configs table, never accepted as config.json input.
+	"/properties/mcp/properties/client_configs/items|oauth_client_id":     "response-only; populated on GET from oauth_configs, not user-configurable via config.json",
+	"/properties/mcp/properties/client_configs/items|oauth_client_secret": "response-only; populated on GET from oauth_configs, not user-configurable via config.json",
+	// source_id is a stable external identifier for teams provisioned by an
+	// integrating system (PR #3395). It is assigned through the API by that
+	// system, never authored in config.json.
+	"/properties/governance/properties/teams/items|source_id": "external identifier set via API by integrating systems; not authored in config.json",
+	// created_by_user_id is DB ownership metadata set by the API/session layer,
+	// never authored in config.json.
+	"/properties/governance/properties/virtual_keys/items|created_by_user_id": "DB ownership metadata; set by API/session layer, not authored in config.json",
 }
 
 // ignoreGoFieldNames are field names (regardless of parent path) that are
@@ -253,13 +284,13 @@ func printReport(w interface{ Write([]byte) (int, error) }, findings []Finding) 
 		groups[f.Category] = append(groups[f.Category], f)
 	}
 	titles := map[string]string{
-		"missing-in-schema":      "Missing in config.schema.json (Go has field, schema doesn't) — ERRORS",
-		"missing-in-go":          "Missing in Go (schema has property, ConfigData doesn't) — WARNINGS",
-		"enum-drift":             "Enum drift (Go constants vs schema enum array)",
-		"enum-no-schema":         "Go enum types with no schema `enum` constraint — WARNINGS",
-		"envvar-no-secret":       "EnvVar fields lacking chart-native Secret support — WARNINGS",
-		"schema-path-not-found":  "Schema path not found for a walked Go type — ERRORS",
-		"entrypoint":             "Entrypoint problems — ERRORS",
+		"missing-in-schema":     "Missing in config.schema.json (Go has field, schema doesn't) — ERRORS",
+		"missing-in-go":         "Missing in Go (schema has property, ConfigData doesn't) — WARNINGS",
+		"enum-drift":            "Enum drift (Go constants vs schema enum array)",
+		"enum-no-schema":        "Go enum types with no schema `enum` constraint — WARNINGS",
+		"envvar-no-secret":      "EnvVar fields lacking chart-native Secret support — WARNINGS",
+		"schema-path-not-found": "Schema path not found for a walked Go type — ERRORS",
+		"entrypoint":            "Entrypoint problems — ERRORS",
 	}
 	for _, cat := range order {
 		items := groups[cat]

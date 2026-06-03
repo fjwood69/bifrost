@@ -1,10 +1,11 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Status, StatusBarColors, Statuses } from "@/lib/constants/logs";
 import type { MCPToolLogEntry } from "@/lib/types/logs";
-import { ColumnDef } from "@tanstack/react-table";
-import { ArrowUpDown, Trash2 } from "lucide-react";
+import { ColumnDef, Row } from "@tanstack/react-table";
 import { format, isValid } from "date-fns";
+import { ArrowUpDown, MoreHorizontal, Trash2 } from "lucide-react";
 
 // Helper function to validate status and return a safe Status value
 const getValidatedStatus = (status: string): Status => {
@@ -95,23 +96,41 @@ export const createMCPColumns = (
 			return <div className="font-mono text-sm">{isValidNumber ? `${cost.toFixed(4)}` : "N/A"}</div>;
 		},
 	},
-	{
-		id: "actions",
-		size: 72,
-		cell: ({ row }) => {
-			const log = row.original;
-			return (
-				<Button
-					variant="outline"
-					size="icon"
-					className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30"
-					onClick={() => void handleDelete(log)}
-					disabled={!hasDeleteAccess}
-					aria-label="Delete log"
-				>
-					<Trash2 />
-				</Button>
-			);
-		},
-	},
+	...(hasDeleteAccess
+		? [
+				{
+					id: "actions",
+					header: "",
+					size: 56,
+					cell: ({ row }: { row: Row<MCPToolLogEntry> }) => {
+						const log = row.original;
+						return (
+							<div className="flex justify-center">
+								<DropdownMenu>
+									<DropdownMenuTrigger asChild onClick={(event) => event.stopPropagation()}>
+										<Button variant="ghost" size="icon" data-testid="log-actions-btn" aria-label="Log actions" className="h-7 w-7">
+											<MoreHorizontal className="h-4 w-4" />
+										</Button>
+									</DropdownMenuTrigger>
+									<DropdownMenuContent align="end">
+										<DropdownMenuItem
+											variant="destructive"
+											className="cursor-pointer"
+											data-testid="log-delete-btn"
+											onClick={(event) => {
+												event.stopPropagation();
+												void handleDelete(log);
+											}}
+										>
+											<Trash2 className="h-4 w-4" />
+											Delete
+										</DropdownMenuItem>
+									</DropdownMenuContent>
+								</DropdownMenu>
+							</div>
+						);
+					},
+				},
+			]
+		: []),
 ];

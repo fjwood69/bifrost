@@ -23,6 +23,18 @@ type AnthropicRouter struct {
 	*GenericRouter
 }
 
+// anthropicModelGetter extracts the model field from any Anthropic integration request type.
+// It is called after body parsing, so req is fully populated.
+func anthropicModelGetter(_ *fasthttp.RequestCtx, req interface{}) (string, error) {
+	switch r := req.(type) {
+	case *anthropic.AnthropicTextRequest:
+		return r.Model, nil
+	case *anthropic.AnthropicMessageRequest:
+		return r.Model, nil
+	}
+	return "", nil
+}
+
 // createAnthropicCompleteRouteConfig creates a route configuration for the `/v1/complete` endpoint.
 func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 	return RouteConfig{
@@ -35,6 +47,7 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &anthropic.AnthropicTextRequest{}
 		},
+		GetRequestModel: anthropicModelGetter,
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if anthropicReq, ok := req.(*anthropic.AnthropicTextRequest); ok {
 				return &schemas.BifrostRequest{
@@ -75,10 +88,24 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &anthropic.AnthropicMessageRequest{}
 			},
+			GetRequestModel: anthropicModelGetter,
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
+					// Plan/act routing: "plan:MODEL_A||act:MODEL_B"
+					// Requests with tool_result blocks are in the act/execution phase; all others are plan/thinking.
+					logger.Debug("[Anthropic] Incoming model: %s", anthropicReq.Model)
+					if planModel, actModel, ok := parsePlanActModel(anthropicReq.Model); ok {
+						if hasToolResultBlocks(anthropicReq.Messages) {
+							anthropicReq.Model = actModel
+							logger.Info("[Anthropic] Routing to ACT model: %s", actModel)
+						} else {
+							anthropicReq.Model = planModel
+							logger.Info("[Anthropic] Routing to PLAN model: %s", planModel)
+						}
+					}
 					bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
 					normalizeBifrostInputContentBlocks(bifrostReq)
+					logger.Debug("[Anthropic] Final model: %s (provider: %s)", bifrostReq.Model, bifrostReq.Provider)
 					return &schemas.BifrostRequest{
 						ResponsesRequest: bifrostReq,
 					}, nil
@@ -86,7 +113,8 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 				return nil, errors.New("invalid request type")
 			},
 			ResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
-				if isClaudeModel(resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed, string(resp.ExtraFields.Provider)) {
+				soToolName, _ := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string)
+				if soToolName == "" && isClaudeModel(resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed, string(resp.ExtraFields.Provider)) {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
 					}
@@ -114,7 +142,8 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 			},
 			StreamConfig: &StreamConfig{
 				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
-					if shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
+					soToolName, _ := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string)
+					if soToolName == "" && shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
 						// Skip passthrough for ContentPartAdded: it's a synthetic bifrost event whose
 						// RawResponse carries the parent content_block_start already emitted by OutputItemAdded.
 						// Passing through here would produce a duplicate content_block_start that causes
@@ -203,58 +232,23 @@ func hasFastModeBetaHeader(headers map[string][]string) bool {
 	return false
 }
 
-// filterVertexUnsupportedBetaHeaders removes beta headers that Vertex AI doesn't support.
-// Vertex AI doesn't support: structured-outputs, advanced-tool-use, prompt-caching-scope, mcp-client.
-func filterVertexUnsupportedBetaHeaders(headers map[string][]string) map[string][]string {
-	var betaHeaderKey string
-	var betaHeaders []string
-	var found bool
-	for k, v := range headers {
-		if strings.ToLower(k) == anthropic.AnthropicBetaHeader {
-			betaHeaderKey = k
-			betaHeaders = v
-			found = true
-			break
-		}
+// hasOutputConfigFormat reports whether the parsed request contains output_config.format
+func hasOutputConfigFormat(req any) bool {
+	r, ok := req.(*anthropic.AnthropicMessageRequest)
+	if !ok {
+		return false
 	}
-
-	if found {
-		var filteredBetas []string
-		for _, headerValue := range betaHeaders {
-			// Split comma-separated beta headers
-			for beta := range strings.SplitSeq(headerValue, ",") {
-				beta = strings.TrimSpace(beta)
-				if beta == "" {
-					continue
-				}
-				// Skip unsupported headers for Vertex.
-				// Use prefix matching so that future date bumps
-				// (e.g. structured-outputs-2025-12-15) are still caught.
-				if strings.HasPrefix(beta, anthropic.AnthropicAdvancedToolUseBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicStructuredOutputsBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicPromptCachingScopeBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicMCPClientBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicSkillsBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicFastModeBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicRedactThinkingBetaHeaderPrefix) {
-					continue
-				}
-				filteredBetas = append(filteredBetas, beta)
-			}
-		}
-		if len(filteredBetas) > 0 {
-			headers[betaHeaderKey] = []string{strings.Join(filteredBetas, ",")}
-		} else {
-			delete(headers, betaHeaderKey)
-		}
+	if r.OutputConfig != nil && len(r.OutputConfig.Format) > 0 {
+		return true
 	}
-
-	return headers
+	return len(r.OutputFormat) > 0
 }
 
 // extractPassthroughHeaders filters headers to only include those in the safe whitelist.
-// Header matching is case-insensitive.
-func extractPassthroughHeaders(allHeaders map[string][]string, provider schemas.ModelProvider) map[string][]string {
+// Header matching is case-insensitive. Provider-aware beta-header filtering happens
+// downstream at each provider's wire layer (e.g. anthropic.go, vertex.go), where
+// networkConfig.BetaHeaderOverrides is in scope.
+func extractPassthroughHeaders(allHeaders map[string][]string) map[string][]string {
 	filtered := make(map[string][]string)
 	for k, v := range allHeaders {
 		if passthroughSafeHeaders[strings.ToLower(k)] {
@@ -263,6 +257,52 @@ func extractPassthroughHeaders(allHeaders map[string][]string, provider schemas.
 	}
 
 	return filtered
+}
+
+// parsePlanActModel parses a compound "plan:MODEL_A||act:MODEL_B" model string.
+// Returns planModel, actModel, and true if the format is recognised; otherwise all empty/false.
+func parsePlanActModel(model string) (string, string, bool) {
+	if !strings.Contains(model, "||") {
+		return "", "", false
+	}
+	var planModel, actModel string
+	for _, part := range strings.Split(model, "||") {
+		kv := strings.SplitN(strings.TrimSpace(part), ":", 2)
+		if len(kv) != 2 {
+			return "", "", false
+		}
+		switch strings.TrimSpace(kv[0]) {
+		case "plan":
+			planModel = strings.TrimSpace(kv[1])
+		case "act":
+			actModel = strings.TrimSpace(kv[1])
+		}
+	}
+	if planModel == "" || actModel == "" {
+		return "", "", false
+	}
+	return planModel, actModel, true
+}
+
+// hasToolResultBlocks returns true if the LAST user message contains a tool_result
+// content block. Checking only the last user message (not full history) means the
+// routing resets correctly when the user asks a new question after a tool turn —
+// that new message has no tool_results, so it routes back to the plan model.
+func hasToolResultBlocks(messages []anthropic.AnthropicMessage) bool {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "user" {
+			continue
+		}
+		for _, block := range messages[i].Content.ContentBlocks {
+			switch block.Type {
+			case anthropic.AnthropicContentBlockTypeToolResult,
+				anthropic.AnthropicContentBlockTypeMCPToolResult:
+				return true
+			}
+		}
+		return false // last user message found, no tool_result
+	}
+	return false
 }
 
 func CreateAnthropicListModelsRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
@@ -330,7 +370,7 @@ func hydrateAnthropicRequestFromLargePayloadMetadata(bifrostCtx *schemas.Bifrost
 // checkAnthropicPassthrough pre-callback checks if the request is for a claude model.
 // If it is, it attaches the raw request body for direct use by the provider.
 // It also checks for anthropic oauth headers and sets the bifrost context.
-func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req any) error {
 	hydrateAnthropicRequestFromLargePayloadMetadata(bifrostCtx, req)
 
 	var provider schemas.ModelProvider
@@ -341,6 +381,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 		provider, model = schemas.ParseModelString(r.Model, "")
 		// Check if model parameter explicitly has `anthropic/` prefix
 		if provider == schemas.Anthropic {
+			bifrostCtx.SetValue(schemas.BifrostContextKeySkipModelCatalogProviderSelection, true)
 			r.Model = model
 		}
 
@@ -348,6 +389,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 		provider, model = schemas.ParseModelString(r.Model, "")
 		// Check if model parameter explicitly has `anthropic/` prefix
 		if provider == schemas.Anthropic {
+			bifrostCtx.SetValue(schemas.BifrostContextKeySkipModelCatalogProviderSelection, true)
 			r.Model = model
 		}
 	}
@@ -357,6 +399,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 
 	// Check if anthropic oauth headers are present
 	if shouldUsePassthrough(bifrostCtx, provider, model, "") {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, true)
 		bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 		bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
 		if !isAnthropicAPIKeyAuth(ctx) && (provider == schemas.Anthropic || provider == "") {
@@ -371,12 +414,12 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 			bifrostCtx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
 		} else {
 			// API key flow: pass only whitelisted safe headers (like anthropic-beta for feature detection)
-			passthroughHeaders := extractPassthroughHeaders(headers, provider)
+			passthroughHeaders := extractPassthroughHeaders(headers)
 			if len(passthroughHeaders) > 0 {
 				bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, passthroughHeaders)
 			}
 		}
-		if provider == schemas.Vertex && (hasPromptCachingScopeBetaHeader(headers) || hasFastModeBetaHeader(headers)) {
+		if provider == schemas.Vertex && (hasPromptCachingScopeBetaHeader(headers) || hasFastModeBetaHeader(headers) || hasOutputConfigFormat(req)) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
 			return nil
 		}
@@ -428,6 +471,27 @@ func extractAnthropicListModelsParams(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 	return errors.New("invalid request type for Anthropic list models")
 }
 
+// stubCountTokensForNonAnthropic short-circuits count_tokens for non-Anthropic providers.
+// Parasail and other OpenAI-compatible providers do not implement this endpoint.
+// The Anthropic SDK uses the count for client-side estimation only; actual usage
+// comes from the completion response, so a zero stub is sufficient.
+// IMPORTANT: omit output_tokens/total_tokens -- those fields do not exist in the
+// real Anthropic count_tokens response and cause SDK-side nil-pointer panics.
+func stubCountTokensForNonAnthropic(ctx *fasthttp.RequestCtx, _ *schemas.BifrostContext, req interface{}) (bool, error) {
+	if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
+		provider, _ := schemas.ParseModelString(anthropicReq.Model, "")
+		// Stub for any non-Anthropic provider, including unrecognised model strings
+		// (e.g. the plan/act compound format) which ParseModelString returns as empty.
+		if provider != schemas.Anthropic {
+			ctx.SetStatusCode(fasthttp.StatusOK)
+			ctx.SetContentType("application/json")
+			ctx.SetBodyString(`{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}`)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // CreateAnthropicCountTokensRouteConfigs creates route configurations for Anthropic count tokens endpoint.
 func CreateAnthropicCountTokensRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
 	return []RouteConfig{
@@ -441,6 +505,7 @@ func CreateAnthropicCountTokensRouteConfigs(pathPrefix string, handlerStore lib.
 			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &anthropic.AnthropicMessageRequest{}
 			},
+			GetRequestModel: anthropicModelGetter,
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
 					bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
@@ -457,7 +522,8 @@ func CreateAnthropicCountTokensRouteConfigs(pathPrefix string, handlerStore lib.
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return anthropic.ToAnthropicChatCompletionError(err)
 			},
-			PreCallback: checkAnthropicPassthrough,
+			PreCallback:  checkAnthropicPassthrough,
+			ShortCircuit: stubCountTokensForNonAnthropic,
 		},
 	}
 }

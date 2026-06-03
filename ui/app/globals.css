@@ -257,6 +257,15 @@
 	}
 }
 
+.no-scrollbar {
+	-ms-overflow-style: none; /* IE and Edge */
+	scrollbar-width: none; /* Firefox */
+}
+
+.no-scrollbar::-webkit-scrollbar {
+	display: none; /* Chrome, Safari */
+}
+
 body {
 	overscroll-behavior: none;
 }
@@ -284,6 +293,22 @@ div.content-container main.content-container-inner:has(.no-padding-parent) {
 
 div.content-container:has(.no-border-parent) {
 	@apply border-0!;
+}
+
+/* // trial-notification-banner style*/
+
+#trial-notification-banner {
+	width: calc(100% + 80px);
+	margin-left: -40px;
+}
+
+div.content-container:has(.no-padding-parent) #trial-notification-banner {
+	width: 100%;
+	margin-left: 0;
+}
+
+div.content-container:has(.no-border-parent) #trial-notification-banner {
+	border: 1px solid transparent;
 }
 
 /* ReactFlow Controls — follow Bifrost colour schema */
@@ -363,4 +388,23 @@ div.content-container:has(.no-border-parent) {
 [data-streamdown="code-block"],
 [data-streamdown="code-block-body"] {
 	@apply rounded-sm!;
+}
+
+/* Ensure toasts remain clickable above modal overlays (radix react-remove-scroll) */
+[data-sonner-toaster] {
+	pointer-events: auto !important;
+}
+
+/* Move Sonner toast close button to top-right */
+[data-sonner-toaster][dir="ltr"],
+[data-sonner-toaster] {
+	--toast-close-button-start: unset !important;
+	--toast-close-button-end: 0 !important;
+	--toast-close-button-transform: translate(35%, -35%) !important;
+}
+
+[data-sonner-toast][data-styled="true"] [data-close-button] {
+	left: auto !important;
+	right: 0 !important;
+	transform: translate(35%, -35%) !important;
 }

@@ -326,13 +326,6 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, oldRedactedKey, updateKey s
 			updateKey.AzureKeyConfig.Endpoint.Equals(&oldRedactedKey.AzureKeyConfig.Endpoint) {
 			mergedKey.AzureKeyConfig.Endpoint = oldRawKey.AzureKeyConfig.Endpoint
 		}
-		if updateKey.AzureKeyConfig.APIVersion != nil &&
-			oldRedactedKey.AzureKeyConfig.APIVersion != nil &&
-			oldRawKey.AzureKeyConfig != nil &&
-			updateKey.AzureKeyConfig.APIVersion.IsRedacted() &&
-			updateKey.AzureKeyConfig.APIVersion.Equals(oldRedactedKey.AzureKeyConfig.APIVersion) {
-			mergedKey.AzureKeyConfig.APIVersion = oldRawKey.AzureKeyConfig.APIVersion
-		}
 		if updateKey.AzureKeyConfig.ClientID != nil &&
 			oldRedactedKey.AzureKeyConfig.ClientID != nil &&
 			oldRawKey.AzureKeyConfig != nil &&
@@ -483,11 +476,11 @@ func getKeyIDFromCtx(ctx *fasthttp.RequestCtx) (string, error) {
 func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) error {
 	switch provider {
 	case schemas.Ollama:
-		if key.OllamaKeyConfig == nil || !key.OllamaKeyConfig.URL.IsDefined() {
+		if key.OllamaKeyConfig == nil || !key.OllamaKeyConfig.URL.IsSet() {
 			return fmt.Errorf("ollama_key_config.url is required for Ollama keys")
 		}
 	case schemas.SGL:
-		if key.SGLKeyConfig == nil || !key.SGLKeyConfig.URL.IsDefined() {
+		if key.SGLKeyConfig == nil || !key.SGLKeyConfig.URL.IsSet() {
 			return fmt.Errorf("sgl_key_config.url is required for SGL keys")
 		}
 	}

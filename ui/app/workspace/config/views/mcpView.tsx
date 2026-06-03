@@ -1,4 +1,12 @@
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { EnvVarInput } from "@/components/ui/envVarInput";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -8,15 +16,24 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { IS_ENTERPRISE } from "@/lib/constants/config";
 import {
   getErrorMessage,
   useGetCoreConfigQuery,
   useUpdateCoreConfigMutation,
 } from "@/lib/store";
 import { CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
+import { EnvVar } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { useGetAuthTypeQuery } from "@enterprise/lib/store/apis/scimApi";
+import { AlertTriangle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+
+const envVarEquals = (a?: EnvVar, b?: EnvVar) =>
+  (a?.value ?? "") === (b?.value ?? "") &&
+  (a?.env_var ?? "") === (b?.env_var ?? "") &&
+  (a?.from_env ?? false) === (b?.from_env ?? false);
 
 export default function MCPView() {
   const hasSettingsUpdateAccess = useRbac(
@@ -24,9 +41,13 @@ export default function MCPView() {
     RbacOperation.Update,
   );
   const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
+  const { data: authType } = useGetAuthTypeQuery(undefined, {
+    skip: !IS_ENTERPRISE,
+  });
   const config = bifrostConfig?.client_config;
   const [updateCoreConfig, { isLoading }] = useUpdateCoreConfigMutation();
   const [localConfig, setLocalConfig] = useState<CoreConfig>(DefaultCoreConfig);
+  const isSCIMEnabled = IS_ENTERPRISE && authType?.type === "sso";
 
   const [localValues, setLocalValues] = useState<{
     mcp_agent_depth: string;
@@ -57,6 +78,10 @@ export default function MCPView() {
 
   const hasChanges = useMemo(() => {
     if (!config) return false;
+    const clientURLChanged = !envVarEquals(
+      localConfig.mcp_external_client_url,
+      config.mcp_external_client_url,
+    );
     return (
       localConfig.mcp_agent_depth !== config.mcp_agent_depth ||
       localConfig.mcp_tool_execution_timeout !==
@@ -66,7 +91,10 @@ export default function MCPView() {
       localConfig.mcp_tool_sync_interval !==
         (config.mcp_tool_sync_interval ?? 10) ||
       localConfig.mcp_disable_auto_tool_inject !==
-        (config.mcp_disable_auto_tool_inject ?? false)
+        (config.mcp_disable_auto_tool_inject ?? false) ||
+      localConfig.mcp_enable_temp_token_auth !==
+        (config.mcp_enable_temp_token_auth ?? false) ||
+      clientURLChanged
     );
   }, [config, localConfig]);
 
@@ -112,6 +140,17 @@ export default function MCPView() {
       ...prev,
       mcp_disable_auto_tool_inject: checked,
     }));
+  }, []);
+
+  const handleTempTokenAuthChange = useCallback((checked: boolean) => {
+    setLocalConfig((prev) => ({
+      ...prev,
+      mcp_enable_temp_token_auth: checked,
+    }));
+  }, []);
+
+  const handleClientURLChange = useCallback((value: EnvVar) => {
+    setLocalConfig((prev) => ({ ...prev, mcp_external_client_url: value }));
   }, []);
 
   const handleSave = useCallback(async () => {
@@ -253,6 +292,33 @@ export default function MCPView() {
           />
         </div>
 
+        {isSCIMEnabled && (
+          /* Temp Token Auth */
+          <div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+            <div className="space-y-0.5">
+              <label
+                htmlFor="mcp-enable-temp-token-auth"
+                className="text-sm font-medium"
+              >
+                Allow Temp Token Auth Links
+              </label>
+              <p className="text-muted-foreground text-sm">
+                When enabled, per-user MCP OAuth links can include a short-lived
+                scoped token so someone without an active Bifrost dashboard
+                session can complete the flow. Keep disabled to require normal
+                dashboard authentication.
+              </p>
+            </div>
+            <Switch
+              id="mcp-enable-temp-token-auth"
+              checked={localConfig.mcp_enable_temp_token_auth ?? false}
+              onCheckedChange={handleTempTokenAuthChange}
+              disabled={!hasSettingsUpdateAccess}
+              data-testid="mcp-enable-temp-token-auth-switch"
+            />
+          </div>
+        )}
+
         {/* Code Mode Binding Level */}
         <div className="space-y-4 rounded-sm border p-4">
           <div className="space-y-0.5">
@@ -319,6 +385,60 @@ export default function MCPView() {
             )}
           </div>
         </div>
+        {/* Advanced Settings — collapsed by default so people don't accidentally
+				    edit the redirect_uri, which would break already-authorized MCP clients. */}
+        <Accordion type="single" collapsible className="rounded-sm border px-4">
+          <AccordionItem value="advanced-settings" className="border-b-0">
+            <AccordionTrigger data-testid="mcp-settings-advanced-trigger">
+              <span className="text-sm font-medium">Advanced Settings</span>
+            </AccordionTrigger>
+            <AccordionContent className="space-y-2 pt-2">
+              <label
+                htmlFor="external-client-url"
+                className="text-sm font-medium"
+              >
+                External Client URL
+              </label>
+              <p className="text-muted-foreground text-sm">
+                Override Bifrost's public base URL when it runs behind a reverse
+                proxy. <b>Leave blank to derive the URL</b> from the incoming{" "}
+                <code className="text-xs">Host</code> header. Used as the{" "}
+                <code className="text-xs">redirect_uri</code> Bifrost registers
+                with upstream OAuth providers when it acts as a client to an MCP
+                server (e.g. Notion or Jira redirect the browser to{" "}
+                <code className="text-xs">{"<URL>/api/oauth/callback"}</code>{" "}
+                after login). Supports env var syntax (e.g.{" "}
+                <code className="text-xs">env.BIFROST_EXTERNAL_URL</code>).
+              </p>
+              <EnvVarInput
+                id="external-client-url"
+                data-testid="mcp-external-client-url-input"
+                placeholder="https://bifrost.example.com or env.BIFROST_OAUTH_REDIRECT_URL"
+                value={localConfig.mcp_external_client_url}
+                onChange={handleClientURLChange}
+                disabled={!hasSettingsUpdateAccess}
+              />
+              <Alert variant="warning">
+                <AlertTriangle className="size-4" />
+                <AlertTitle>
+                  Changing this URL can break existing MCP clients
+                </AlertTitle>
+                <AlertDescription>
+                  <p>
+                    Upstream OAuth providers lock the{" "}
+                    <code className="text-xs">redirect_uri</code> to whatever
+                    was registered initially, so MCP clients that already
+                    completed OAuth will fail with{" "}
+                    <em>&quot;Invalid redirect URI&quot;</em>. To recover, clear
+                    the stored OAuth client credentials for the affected MCP
+                    servers and re-authorize so Bifrost re-runs Dynamic Client
+                    Registration with the new URL.
+                  </p>
+                </AlertDescription>
+              </Alert>
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
       </div>
       <div className="flex justify-end pt-2">
         <Button

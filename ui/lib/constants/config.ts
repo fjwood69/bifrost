@@ -84,7 +84,7 @@ export const DefaultNetworkConfig = {
 	retry_backoff_initial: 1000,
 	retry_backoff_max: 10000,
 	insecure_skip_verify: false,
-	ca_cert_pem: "",
+	ca_cert_pem: { value: "", env_var: "", from_env: false },
 	stream_idle_timeout_in_seconds: 60,
 	max_conns_per_host: 5000,
 	enforce_http2: false,
@@ -95,11 +95,13 @@ export const DefaultPerformanceConfig = {
 	buffer_size: 5000,
 } satisfies ConcurrencyAndBufferSize;
 
-export const MCP_STATUS_COLORS = {
+export const MCP_STATUS_COLORS: Record<string, string> = {
 	connected: "bg-green-100 text-green-800",
 	error: "bg-red-100 text-red-800",
 	disconnected: "bg-gray-100 text-gray-800",
-} as const;
+	pending_tools: "bg-yellow-100 text-yellow-800",
+	disabled: "bg-orange-100 text-orange-800",
+};
 
 // Mapping of what IS supported by each base provider
 export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {

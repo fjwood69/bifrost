@@ -139,6 +139,28 @@ func (t *Tracer) SetAttribute(handle schemas.SpanHandle, key string, value any) 
 	}
 }
 
+// GetSpanHandleByID retrieves a span handle for the given trace and span ID.
+// If spanID is nil, it returns a handle for the trace's root span.
+func (t *Tracer) GetSpanHandleByID(traceID string, spanID *string) schemas.SpanHandle {
+	if traceID == "" {
+		return nil
+	}
+	trace := t.store.GetTrace(traceID)
+	if trace == nil {
+		return nil
+	}
+	if spanID == nil {
+		if trace.RootSpan == nil {
+			return nil
+		}
+		return &spanHandle{traceID: traceID, spanID: trace.RootSpan.SpanID}
+	}
+	if *spanID == "" || trace.GetSpan(*spanID) == nil {
+		return nil
+	}
+	return &spanHandle{traceID: traceID, spanID: *spanID}
+}
+
 // AddEvent adds a timestamped event to the span identified by the handle.
 func (t *Tracer) AddEvent(handle schemas.SpanHandle, name string, attrs map[string]any) {
 	h, ok := handle.(*spanHandle)
@@ -174,8 +196,38 @@ func (t *Tracer) PopulateLLMRequestAttributes(handle schemas.SpanHandle, req *sc
 		return
 	}
 
-	for k, v := range PopulateRequestAttributes(req) {
+	attrs := PopulateRequestAttributes(req)
+	for k, v := range attrs {
 		span.SetAttribute(k, v)
+	}
+
+	// Propagate input messages and request model to root span so observability backends (e.g. Langfuse)
+	// can display Input and model name at the top-level trace without requiring users to drill into llm.call.
+	if rootSpan := trace.RootSpan; rootSpan != nil && rootSpan.SpanID != span.SpanID {
+		var inputText string
+		switch req.RequestType {
+		case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+			if req.ChatRequest != nil && len(req.ChatRequest.Input) > 0 {
+				last := req.ChatRequest.Input[len(req.ChatRequest.Input)-1]
+				inputText = extractMessageContent(last.Content)
+			}
+		case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+			if req.ResponsesRequest != nil && len(req.ResponsesRequest.Input) > 0 {
+				last := req.ResponsesRequest.Input[len(req.ResponsesRequest.Input)-1]
+				inputText = extractResponsesMessageTextContent(&last)
+			}
+		}
+		if inputText != "" {
+			rootSpan.SetAttribute(schemas.AttrInputMessages, inputText)
+		} else if v, ok := attrs[schemas.AttrInputMessages]; ok {
+			rootSpan.SetAttribute(schemas.AttrInputMessages, v)
+		}
+		if v, ok := attrs[schemas.AttrRequestModel]; ok {
+			rootSpan.SetAttribute(schemas.AttrRequestModel, v)
+		}
+		if v, ok := attrs[schemas.AttrProviderName]; ok {
+			rootSpan.SetAttribute(schemas.AttrProviderName, v)
+		}
 	}
 }
 
@@ -193,7 +245,15 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	if span == nil {
 		return
 	}
-	for k, v := range PopulateResponseAttributes(resp) {
+	respAttrs := PopulateResponseAttributes(resp)
+	for k, v := range respAttrs {
+		if k == schemas.AttrFinishReasons {
+			// llm.call span gets the singular finish_reason (first element only)
+			if reasons, ok := v.([]string); ok && len(reasons) > 0 {
+				span.SetAttribute(schemas.AttrFinishReason, reasons[0])
+			}
+			continue
+		}
 		span.SetAttribute(k, v)
 	}
 	for k, v := range PopulateErrorAttributes(err) {
@@ -203,6 +263,38 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	if t.pricingManager != nil && resp != nil {
 		cost := t.pricingManager.CalculateCost(resp, modelcatalog.PricingLookupScopesFromContext(ctx, string(resp.GetExtraFields().Provider)))
 		span.SetAttribute(schemas.AttrUsageCost, cost)
+	}
+
+	// Propagate output messages, response model, and finish reasons to root span so observability backends (e.g. Langfuse)
+	// can display Output and model name at the top-level trace without requiring users to drill into llm.call.
+	if rootSpan := trace.RootSpan; rootSpan != nil && rootSpan.SpanID != span.SpanID {
+		var outputText string
+		if resp != nil {
+			if resp.ChatResponse != nil && len(resp.ChatResponse.Choices) > 0 {
+				choice := resp.ChatResponse.Choices[0]
+				if choice.ChatNonStreamResponseChoice != nil && choice.ChatNonStreamResponseChoice.Message != nil {
+					outputText = extractMessageContent(choice.ChatNonStreamResponseChoice.Message.Content)
+				}
+			} else if resp.ResponsesResponse != nil {
+				for _, msg := range extractResponsesOutputMessages(resp.ResponsesResponse) {
+					if msg.Content != "" {
+						outputText = msg.Content
+						break
+					}
+				}
+			}
+		}
+		if outputText != "" {
+			rootSpan.SetAttribute(schemas.AttrOutputMessages, outputText)
+		} else if v, ok := respAttrs[schemas.AttrOutputMessages]; ok {
+			rootSpan.SetAttribute(schemas.AttrOutputMessages, v)
+		}
+		if v, ok := respAttrs[schemas.AttrResponseModel]; ok {
+			rootSpan.SetAttribute(schemas.AttrResponseModel, v)
+		}
+		if v, ok := respAttrs[schemas.AttrFinishReasons]; ok {
+			rootSpan.SetAttribute(schemas.AttrFinishReasons, v)
+		}
 	}
 }
 
@@ -288,10 +380,11 @@ func (t *Tracer) CleanupStreamAccumulator(traceID string) {
 }
 
 // ProcessStreamingChunk processes a streaming chunk and accumulates it.
-// Returns the accumulated result. IsFinal will be true when the stream is complete.
+// Returns the accumulated result when isFinalChunk is true and the stream is complete;
+// returns nil for non-final chunks.
 // This method is used by plugins to access accumulated streaming data.
-// The ctx parameter must contain the stream end indicator for proper final chunk detection.
-func (t *Tracer) ProcessStreamingChunk(traceID string, isFinalChunk bool, result *schemas.BifrostResponse, err *schemas.BifrostError) *schemas.StreamAccumulatorResult {
+// Set isFinalChunk to indicate whether the current chunk is the last in the stream.
+func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID string, isFinalChunk bool, result *schemas.BifrostResponse, err *schemas.BifrostError) *schemas.StreamAccumulatorResult {
 	if traceID == "" || t.accumulator == nil {
 		return nil
 	}
@@ -300,6 +393,12 @@ func (t *Tracer) ProcessStreamingChunk(traceID string, isFinalChunk bool, result
 	accumCtx := schemas.NewBifrostContext(context.Background(), time.Time{})
 	accumCtx.SetValue(schemas.BifrostContextKeyAccumulatorID, traceID)
 	accumCtx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, isFinalChunk)
+
+	// Forward relevant context values to the new context
+	if ctx != nil {
+		accumCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, ctx.Value(schemas.BifrostContextKeySelectedKeyID))
+		accumCtx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID))
+	}
 
 	processedResp, processErr := t.accumulator.ProcessStreamingResponse(accumCtx, result, err)
 	if processErr != nil || processedResp == nil {
@@ -336,10 +435,12 @@ func (t *Tracer) ProcessStreamingChunk(traceID string, isFinalChunk bool, result
 		accResult.OutputMessages = processedResp.Data.OutputMessages
 		accResult.TokenUsage = processedResp.Data.TokenUsage
 		accResult.Cost = processedResp.Data.Cost
+		accResult.CacheDebug = processedResp.Data.CacheDebug
 		accResult.ErrorDetails = processedResp.Data.ErrorDetails
 		accResult.AudioOutput = processedResp.Data.AudioOutput
 		accResult.TranscriptionOutput = processedResp.Data.TranscriptionOutput
 		accResult.ImageGenerationOutput = processedResp.Data.ImageGenerationOutput
+		accResult.PassthroughOutput = processedResp.Data.PassthroughOutput
 		accResult.FinishReason = processedResp.Data.FinishReason
 		accResult.RawResponse = processedResp.Data.RawResponse
 

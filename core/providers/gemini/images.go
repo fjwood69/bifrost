@@ -94,6 +94,16 @@ func (request *GeminiGenerationRequest) ToBifrostImageGenerationRequest(ctx *sch
 		}
 	}
 
+	if request.GenerationConfig.ImageConfig != nil {
+		ic := request.GenerationConfig.ImageConfig
+		if strings.TrimSpace(ic.ImageSize) != "" || strings.TrimSpace(ic.AspectRatio) != "" {
+			size := convertImagenFormatToSize(&ic.ImageSize, &ic.AspectRatio)
+			if size != "" {
+				bifrostReq.Params.Size = &size
+			}
+		}
+	}
+
 	return bifrostReq
 }
 
@@ -288,6 +298,16 @@ func (request *GeminiGenerationRequest) ToBifrostImageEditRequest(ctx *schemas.B
 		}
 	}
 
+	if request.GenerationConfig.ImageConfig != nil {
+		ic := request.GenerationConfig.ImageConfig
+		if strings.TrimSpace(ic.ImageSize) != "" || strings.TrimSpace(ic.AspectRatio) != "" {
+			size := convertImagenFormatToSize(&ic.ImageSize, &ic.AspectRatio)
+			if size != "" {
+				bifrostReq.Params.Size = &size
+			}
+		}
+	}
+
 	return bifrostReq
 }
 
@@ -394,6 +414,8 @@ func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 		return nil
 	}
 
+	bifrostReq.Model = NormalizeModelName(bifrostReq.Model)
+
 	// Create the base Gemini generation request
 	geminiReq := &GeminiGenerationRequest{
 		Model: bifrostReq.Model,
@@ -411,7 +433,7 @@ func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 			aspectRatio, imageSize := utils.ConvertSizeToAspectRatioAndResolution(*bifrostReq.Params.Size)
 			if imageSize != "" && aspectRatio != "" {
 				geminiReq.GenerationConfig.ImageConfig = &GeminiImageConfig{
-					ImageSize:   strings.ToLower(imageSize),
+					ImageSize:   imageSize,
 					AspectRatio: aspectRatio,
 				}
 			}
@@ -493,6 +515,8 @@ func ToImagenImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 		return nil
 	}
 
+	bifrostReq.Model = NormalizeModelName(bifrostReq.Model)
+
 	// Create instances array with prompt
 	prompt := bifrostReq.Input.Prompt
 	instances := []ImagenInstance{
@@ -515,8 +539,7 @@ func ToImagenImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 		if bifrostReq.Params.Size != nil && strings.ToLower(*bifrostReq.Params.Size) != "auto" {
 			aspectRatio, imageSize := utils.ConvertSizeToAspectRatioAndResolution(*bifrostReq.Params.Size)
 			if imageSize != "" {
-				imageSizeLower := strings.ToLower(imageSize)
-				req.Parameters.SampleImageSize = &imageSizeLower
+				req.Parameters.SampleImageSize = &imageSize
 			}
 			if aspectRatio != "" {
 				req.Parameters.AspectRatio = &aspectRatio
@@ -639,7 +662,6 @@ func convertOutputFormatToMimeType(outputFormat string) string {
 	}
 }
 
-
 // ToBifrostImageGenerationResponse converts an Imagen response to Bifrost format
 func (response *GeminiImagenResponse) ToBifrostImageGenerationResponse() *schemas.BifrostImageGenerationResponse {
 	if response == nil {
@@ -734,6 +756,8 @@ func ToGeminiImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Gemi
 		return nil
 	}
 
+	bifrostReq.Model = NormalizeModelName(bifrostReq.Model)
+
 	// Create the base Gemini generation request
 	geminiReq := &GeminiGenerationRequest{
 		Model: bifrostReq.Model,
@@ -744,6 +768,17 @@ func ToGeminiImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Gemi
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
 		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
+
+		// Handle size conversion
+		if bifrostReq.Params.Size != nil && strings.ToLower(*bifrostReq.Params.Size) != "auto" {
+			aspectRatio, imageSize := utils.ConvertSizeToAspectRatioAndResolution(*bifrostReq.Params.Size)
+			if imageSize != "" && aspectRatio != "" {
+				geminiReq.GenerationConfig.ImageConfig = &GeminiImageConfig{
+					ImageSize:   imageSize,
+					AspectRatio: aspectRatio,
+				}
+			}
+		}
 
 		// Handle extra parameters
 		if bifrostReq.Params.ExtraParams != nil {
@@ -926,6 +961,8 @@ func ToImagenImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Gemi
 	if bifrostReq == nil || bifrostReq.Input == nil || len(bifrostReq.Input.Images) == 0 {
 		return nil
 	}
+
+	bifrostReq.Model = NormalizeModelName(bifrostReq.Model)
 
 	req := &GeminiImagenRequest{
 		Parameters: GeminiImagenParameters{},

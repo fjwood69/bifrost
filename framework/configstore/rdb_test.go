@@ -42,8 +42,6 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TablePromptVersionMessage{},
 		&tables.TablePromptSession{},
 		&tables.TablePromptSessionMessage{},
-		&tables.TablePerUserOAuthPendingFlow{},
-		&tables.TablePerUserOAuthSession{},
 		&tables.TableOauthUserSession{},
 		&tables.TableOauthUserToken{},
 	)
@@ -488,7 +486,7 @@ func TestCreateVirtualKey(t *testing.T) {
 		ID:       "vk-test",
 		Name:     "Test Virtual Key",
 		Value:    "vk-test-value-123",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 
 	err := store.CreateVirtualKey(ctx, vk)
@@ -499,7 +497,7 @@ func TestCreateVirtualKey(t *testing.T) {
 	assert.Equal(t, "vk-test", result.ID)
 	assert.Equal(t, "Test Virtual Key", result.Name)
 	assert.Equal(t, "vk-test-value-123", result.Value)
-	assert.True(t, result.IsActive)
+	assert.True(t, result.IsActiveValue())
 }
 
 func TestCreateVirtualKey_WithBudgetAndRateLimit(t *testing.T) {
@@ -533,7 +531,7 @@ func TestCreateVirtualKey_WithBudgetAndRateLimit(t *testing.T) {
 		ID:          vkID,
 		Name:        "VK With References",
 		Value:       "vk-refs-value",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		RateLimitID: &rateLimitID,
 	}
 
@@ -561,7 +559,7 @@ func TestCreateVirtualKey_DuplicateName(t *testing.T) {
 		ID:       "vk-1",
 		Name:     "Same Name",
 		Value:    "vk-value-1",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk1)
 	require.NoError(t, err)
@@ -570,7 +568,7 @@ func TestCreateVirtualKey_DuplicateName(t *testing.T) {
 		ID:       "vk-2",
 		Name:     "Same Name", // Duplicate name
 		Value:    "vk-value-2",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err = store.CreateVirtualKey(ctx, vk2)
 	assert.Error(t, err, "Should fail with duplicate name")
@@ -584,7 +582,7 @@ func TestGetVirtualKeyByValue(t *testing.T) {
 		ID:       "vk-lookup",
 		Name:     "Lookup Key",
 		Value:    "vk-unique-value-xyz",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
@@ -602,21 +600,21 @@ func TestUpdateVirtualKey(t *testing.T) {
 		ID:       "vk-update",
 		Name:     "Original Name",
 		Value:    "vk-update-value",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
 
 	// Update
 	vk.Name = "Updated Name"
-	vk.IsActive = false
+	vk.IsActive = schemas.Ptr(false)
 	err = store.UpdateVirtualKey(ctx, vk)
 	require.NoError(t, err)
 
 	result, err := store.GetVirtualKey(ctx, "vk-update")
 	require.NoError(t, err)
 	assert.Equal(t, "Updated Name", result.Name)
-	assert.False(t, result.IsActive)
+	assert.False(t, result.IsActiveValue())
 }
 
 func TestDeleteVirtualKey(t *testing.T) {
@@ -627,7 +625,7 @@ func TestDeleteVirtualKey(t *testing.T) {
 		ID:       "vk-delete",
 		Name:     "Delete Me",
 		Value:    "vk-delete-value",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
@@ -652,7 +650,7 @@ func TestCreateVirtualKeyProviderConfig(t *testing.T) {
 		ID:       "vk-for-pc",
 		Name:     "VK For Provider Config",
 		Value:    "vk-pc-value",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
@@ -695,7 +693,7 @@ func TestCreateVirtualKeyProviderConfig_WithKeys(t *testing.T) {
 		ID:       "vk-with-keys",
 		Name:     "VK With Keys",
 		Value:    "vk-keys-value",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err = store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
@@ -735,7 +733,7 @@ func TestCreateVirtualKeyProviderConfig_UnresolvedKeys(t *testing.T) {
 		ID:       "vk-unresolved",
 		Name:     "VK Unresolved",
 		Value:    "vk-unresolved-value",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err := store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
@@ -777,7 +775,7 @@ func TestUpdateProvider_RemovesStaleVirtualKeyProviderConfigKeyAssociations(t *t
 		ID:       "vk-update-provider-cleanup",
 		Name:     "VK Update Provider Cleanup",
 		Value:    "vk-update-provider-cleanup-value",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err = store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
@@ -826,7 +824,7 @@ func TestDeleteProvider_RemovesVirtualKeyProviderConfigs(t *testing.T) {
 		ID:       "vk-delete-provider-cleanup",
 		Name:     "VK Delete Provider Cleanup",
 		Value:    "vk-delete-provider-cleanup-value",
-		IsActive: true,
+		IsActive: schemas.Ptr(true),
 	}
 	err = store.CreateVirtualKey(ctx, vk)
 	require.NoError(t, err)
@@ -858,7 +856,6 @@ func TestUpdateClientConfig(t *testing.T) {
 
 	config := &ClientConfig{
 		EnableLogging:        new(true),
-		AllowDirectKeys:      true,
 		InitialPoolSize:      100,
 		LogRetentionDays:     30,
 		MaxRequestBodySizeMB: 50,
@@ -871,6 +868,123 @@ func TestUpdateClientConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, result.EnableLogging != nil && *result.EnableLogging)
 	assert.Equal(t, 100, result.InitialPoolSize)
+}
+
+func TestUpdateClientMetadata(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	err := store.UpdateClientConfig(ctx, &ClientConfig{
+		EnableLogging:        new(true),
+		InitialPoolSize:      100,
+		LogRetentionDays:     30,
+		MaxRequestBodySizeMB: 50,
+	})
+	require.NoError(t, err)
+
+	err = store.UpdateClientMetadata(ctx, map[string]any{
+		"onboarding_dismissed": true,
+		"theme":                "dark",
+	})
+	require.NoError(t, err)
+
+	err = store.UpdateClientMetadata(ctx, map[string]any{
+		"theme": "light",
+		"stale": nil,
+	})
+	require.NoError(t, err)
+
+	metadata, err := store.GetClientMetadata(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, true, metadata["onboarding_dismissed"])
+	assert.Equal(t, "light", metadata["theme"])
+	assert.NotContains(t, metadata, "stale")
+
+	err = store.UpdateClientMetadata(ctx, map[string]any{"theme": nil})
+	require.NoError(t, err)
+
+	metadata, err = store.GetClientMetadata(ctx)
+	require.NoError(t, err)
+	assert.NotContains(t, metadata, "theme")
+	assert.Equal(t, true, metadata["onboarding_dismissed"])
+
+	// Nested objects must be merged recursively (RFC 7386), not replaced
+	// wholesale, so sibling keys survive a partial nested patch.
+	err = store.UpdateClientMetadata(ctx, map[string]any{
+		"onboarding": map[string]any{"dismissed": true, "step": "a"},
+	})
+	require.NoError(t, err)
+
+	err = store.UpdateClientMetadata(ctx, map[string]any{
+		"onboarding": map[string]any{"step": "b"},
+	})
+	require.NoError(t, err)
+
+	metadata, err = store.GetClientMetadata(ctx)
+	require.NoError(t, err)
+	onboarding, ok := metadata["onboarding"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, true, onboarding["dismissed"], "sibling key must survive nested patch")
+	assert.Equal(t, "b", onboarding["step"])
+
+	// A nil nested value deletes just that nested key.
+	err = store.UpdateClientMetadata(ctx, map[string]any{
+		"onboarding": map[string]any{"dismissed": nil},
+	})
+	require.NoError(t, err)
+
+	metadata, err = store.GetClientMetadata(ctx)
+	require.NoError(t, err)
+	onboarding, ok = metadata["onboarding"].(map[string]any)
+	require.True(t, ok)
+	assert.NotContains(t, onboarding, "dismissed")
+	assert.Equal(t, "b", onboarding["step"])
+}
+
+func TestUpdateClientMetadataRequiresClientConfig(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	err := store.UpdateClientMetadata(ctx, map[string]any{"onboarding_dismissed": true})
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrNotFound)
+
+	var count int64
+	err = store.DB().WithContext(ctx).Model(&tables.TableClientConfig{}).Count(&count).Error
+	require.NoError(t, err)
+	assert.Zero(t, count)
+}
+
+func TestUpdateClientConfigPreservesMetadata(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	err := store.UpdateClientConfig(ctx, &ClientConfig{
+		EnableLogging:        new(true),
+		InitialPoolSize:      100,
+		LogRetentionDays:     30,
+		MaxRequestBodySizeMB: 50,
+	})
+	require.NoError(t, err)
+
+	err = store.UpdateClientMetadata(ctx, map[string]any{"onboarding_dismissed": true})
+	require.NoError(t, err)
+
+	err = store.UpdateClientConfig(ctx, &ClientConfig{
+		EnableLogging:        new(true),
+		InitialPoolSize:      200,
+		LogRetentionDays:     60,
+		MaxRequestBodySizeMB: 100,
+	})
+	require.NoError(t, err)
+
+	config, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 200, config.InitialPoolSize)
+
+	metadata, err := store.GetClientMetadata(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, true, metadata["onboarding_dismissed"])
 }
 
 // =============================================================================
@@ -1106,7 +1220,7 @@ func TestFullVirtualKeyFlow(t *testing.T) {
 		ID:          integrationVKID,
 		Name:        "Integration Virtual Key",
 		Value:       "vk-integration-xyz",
-		IsActive:    true,
+		IsActive:    schemas.Ptr(true),
 		RateLimitID: &rateLimitID,
 	}
 	err = store.CreateVirtualKey(ctx, vk)

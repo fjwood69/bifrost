@@ -26,7 +26,7 @@ type TableMCPClient struct {
 	AllowedExtraHeadersJSON string          `gorm:"type:text" json:"-"`                              // JSON serialized []string
 	IsPingAvailable         *bool           `gorm:"default:true" json:"is_ping_available,omitempty"` // Whether the MCP server supports ping for health checks
 	ToolPricingJSON         string          `gorm:"type:text" json:"-"`                              // JSON serialized map[string]float64
-	ToolSyncInterval        int             `gorm:"default:0" json:"tool_sync_interval"`             // Per-client tool sync interval in minutes (0 = use global, -1 = disabled)
+	ToolSyncInterval        int             `gorm:"default:0" json:"tool_sync_interval"`             // Per-client tool sync interval in seconds (0 = use global, negative = disabled)
 
 	// Per-user OAuth: discovered tools persisted so they survive restart
 	DiscoveredToolsJSON       string `gorm:"type:text" json:"-"`                              // JSON serialized map[string]schemas.ChatTool
@@ -38,6 +38,7 @@ type TableMCPClient struct {
 	OauthConfig   *TableOauthConfig `gorm:"foreignKey:OauthConfigID;references:ID;constraint:OnDelete:CASCADE" json:"-"` // Gorm relationship
 
 	AllowOnAllVirtualKeys bool `gorm:"default:false" json:"allow_on_all_virtual_keys"` // Whether to allow the MCP client to run on all virtual keys
+	Disabled              bool `gorm:"default:false" json:"disabled"`                  // Whether the client is intentionally disabled
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash

@@ -5,6 +5,7 @@ import { Fragment } from "react";
 import { CodeEditor } from "@/components/ui/codeEditor";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { HeadersTable } from "@/components/ui/headersTable";
+import { EnvVarInput } from "@/components/ui/envVarInput";
 import { Input } from "@/components/ui/input";
 import { MultiSelect } from "@/components/ui/multiSelect";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -24,6 +25,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { ChevronDown, ChevronRight, Info, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
+import { OAuth2Authorizer } from "./oauth2Authorizer";
 
 interface MCPClientSheetProps {
 	mcpClient: MCPClient;
@@ -64,6 +66,12 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 	const [vkConfigs, setVKConfigs] = useState<MCPVKConfig[]>([]);
 	const [vkConfigsDirty, setVKConfigsDirty] = useState(false);
 	const [allowedExtraHeadersRaw, setAllowedExtraHeadersRaw] = useState<string>((mcpClient.config.allowed_extra_headers || []).join(", "));
+	const [oauthFlow, setOauthFlow] = useState<{
+		authorizeUrl: string;
+		oauthConfigId: string;
+		mcpClientId: string;
+		isPerUserOauth?: boolean;
+	} | null>(null);
 	// Persists names for newly added VKs so they survive search result changes
 	const [localVKNames, setLocalVKNames] = useState<Record<string, string>>({});
 
@@ -103,6 +111,8 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 		],
 		[allToolNames],
 	);
+	const supportsOAuthCredentialUpdate = false;
+	// mcpClient.config.auth_type === "oauth" || mcpClient.config.auth_type === "per_user_oauth";
 
 	const addVKConfig = (vkId: string) => {
 		const name = vksData?.virtual_keys?.find((vk) => vk.id === vkId)?.name;
@@ -141,14 +151,19 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
 			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
 			allow_on_all_virtual_keys: mcpClient.config.allow_on_all_virtual_keys || false,
+			disabled: mcpClient.config.disabled || false,
 			headers: mcpClient.config.headers,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
+			oauth_config: supportsOAuthCredentialUpdate
+				? { client_id: mcpClient.config.oauth_client_id, client_secret: mcpClient.config.oauth_client_secret }
+				: undefined,
 		},
 	});
+	const isDisabled = form.watch("disabled");
 
 	// Reset form when mcpClient changes
 	useEffect(() => {
@@ -157,33 +172,60 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
 			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
 			allow_on_all_virtual_keys: mcpClient.config.allow_on_all_virtual_keys || false,
+			disabled: mcpClient.config.disabled || false,
 			headers: mcpClient.config.headers,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
+			oauth_config: supportsOAuthCredentialUpdate
+				? { client_id: mcpClient.config.oauth_client_id, client_secret: mcpClient.config.oauth_client_secret }
+				: undefined,
 		});
 	}, [form, mcpClient]);
 
 	const onSubmit = async (data: MCPClientUpdateSchema) => {
 		try {
-			await updateMCPClient({
+			const oauthClientID = data.oauth_config?.client_id;
+			const oauthClientSecret = data.oauth_config?.client_secret;
+			// Only rotate when the user actually changed a credential field.
+			// dirtyFields tracks deep changes vs. the pre-populated default values.
+			const oauthDirty = !!(form.formState.dirtyFields.oauth_config?.client_id || form.formState.dirtyFields.oauth_config?.client_secret);
+			const shouldRotateOAuthCredentials = supportsOAuthCredentialUpdate && oauthDirty;
+			const response = await updateMCPClient({
 				id: mcpClient.config.client_id,
 				data: {
 					name: data.name,
 					is_code_mode_client: data.is_code_mode_client,
 					is_ping_available: data.is_ping_available,
 					allow_on_all_virtual_keys: data.allow_on_all_virtual_keys,
+					disabled: data.disabled,
 					headers: data.headers ?? {},
 					tools_to_execute: data.tools_to_execute,
 					tools_to_auto_execute: data.tools_to_auto_execute,
 					tool_pricing: data.tool_pricing,
 					tool_sync_interval: data.tool_sync_interval ?? 0,
 					allowed_extra_headers: data.allowed_extra_headers,
+					oauth_config: shouldRotateOAuthCredentials
+						? {
+								client_id: oauthClientID,
+								client_secret: oauthClientSecret,
+							}
+						: undefined,
 					vk_configs: vkConfigsDirty ? vkConfigs : undefined,
 				},
 			}).unwrap();
+
+			if (response.status === "pending_oauth" && response.authorize_url) {
+				setOauthFlow({
+					authorizeUrl: response.authorize_url,
+					oauthConfigId: response.oauth_config_id,
+					mcpClientId: response.mcp_client_id,
+					isPerUserOauth: mcpClient.config.auth_type === "per_user_oauth",
+				});
+				return;
+			}
 
 			toast({
 				title: "Success",
@@ -304,31 +346,22 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 	};
 
 	return (
-		<Sheet open onOpenChange={onClose}>
-			<SheetContent className="flex w-full flex-col overflow-x-hidden p-8 sm:max-w-[60%]">
+		<Sheet open onOpenChange={(open) => !open && !oauthFlow && onClose()}>
+			<SheetContent className="flex w-full flex-col overflow-x-hidden pt-4 sm:max-w-[60%]">
+				<SheetHeader className="w-full p-0 px-8 py-4" showCloseButton={false} headerClassName="mb-0 sticky -top-4 bg-card z-10">
+					<div className="flex w-full items-center justify-between">
+						<div className="space-y-2">
+							<SheetTitle className="flex w-fit items-center gap-2 font-medium">
+								{mcpClient.config.name}
+								<Badge className={MCP_STATUS_COLORS[mcpClient.state]}>{mcpClient.state}</Badge>
+							</SheetTitle>
+							<SheetDescription>MCP server configuration and available tools</SheetDescription>
+						</div>
+					</div>
+				</SheetHeader>
 				<Form {...form}>
 					<form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col">
-						<SheetHeader className="w-full p-0" showCloseButton={false}>
-							<div className="flex w-full items-center justify-between">
-								<div className="space-y-2">
-									<SheetTitle className="flex w-fit items-center gap-2 font-medium">
-										{mcpClient.config.name}
-										<Badge className={MCP_STATUS_COLORS[mcpClient.state]}>{mcpClient.state}</Badge>
-									</SheetTitle>
-									<SheetDescription>MCP server configuration and available tools</SheetDescription>
-								</div>
-								<Button
-									className="ml-auto"
-									type="submit"
-									disabled={isUpdating || (!form.formState.isDirty && !vkConfigsDirty) || !hasUpdateMCPClientAccess}
-									isLoading={isUpdating}
-								>
-									Save Changes
-								</Button>
-							</div>
-						</SheetHeader>
-
-						<div className="gap-6 space-y-6">
+						<div className="gap-6 space-y-6 px-8">
 							{/* Name and Header Section */}
 							<div className="space-y-4">
 								<h3 className="font-semibold">Basic Information</h3>
@@ -429,6 +462,42 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 													checked={field.value === true}
 													onCheckedChange={field.onChange}
 													data-testid="mcpclient-allow-on-all-virtual-keys-switch"
+												/>
+											</FormControl>
+										</FormItem>
+									)}
+								/>
+								<FormField
+									control={form.control}
+									name="disabled"
+									render={({ field }) => (
+										<FormItem className="flex items-center justify-between rounded-lg border p-4">
+											<div className="flex items-center gap-2">
+												<FormLabel>Disable Client</FormLabel>
+												<TooltipProvider>
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+														</TooltipTrigger>
+														<TooltipContent className="max-w-xs">
+															<p>
+																When enabled, the client's connection, health monitor, and tool syncer are shut down. Tools from this client
+																will not be available for inference until it is re-enabled.
+															</p>
+														</TooltipContent>
+													</Tooltip>
+												</TooltipProvider>
+											</div>
+											<FormControl>
+												<Switch
+													checked={field.value === true}
+													onCheckedChange={(checked) => {
+														field.onChange(checked);
+														if (checked) {
+															form.setValue("oauth_config", undefined);
+														}
+													}}
+													data-testid="mcpclient-disabled-switch"
 												/>
 											</FormControl>
 										</FormItem>
@@ -546,41 +615,66 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 									)}
 								/>
 							</div>
-							{/* Client Configuration */}
-							<div className="space-y-4">
-								<h3 className="font-semibold">Configuration</h3>
-								<div className="rounded-sm border">
-									<div className="bg-muted/50 text-muted-foreground border-b px-6 py-2 text-xs font-medium">Client ConnectionConfig</div>
-									<CodeEditor
-										className="z-0 w-full"
-										shouldAdjustInitialHeight={true}
-										maxHeight={300}
-										wrap={true}
-										code={JSON.stringify(
-											(() => {
-												const {
-													client_id: _client_id,
-													name: _name,
-													tools_to_execute: _tools_to_execute,
-													headers: _headers,
-													...rest
-												} = mcpClient.config;
-												return rest;
-											})(),
-											null,
-											2,
-										)}
-										lang="json"
-										readonly={true}
-										options={{
-											scrollBeyondLastLine: false,
-											collapsibleBlocks: true,
-											lineNumbers: "off",
-											alwaysConsumeMouseWheel: false,
-										}}
-									/>
+							{supportsOAuthCredentialUpdate ? (
+								<div className="space-y-4">
+									<h3 className="font-semibold">OAuth Credentials</h3>
+									{isDisabled ? (
+										<div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+											<Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+											<p>OAuth credentials cannot be rotated while the client is disabled. Re-enable the client to update credentials.</p>
+										</div>
+									) : (
+										<p className="text-muted-foreground text-sm">
+											Update OAuth client credentials only. Connection type, auth type, and connection URL cannot be changed.
+										</p>
+									)}
+									<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+										<FormField
+											control={form.control}
+											name="oauth_config.client_id"
+											render={({ field }) => (
+												<FormItem className="flex flex-col gap-2">
+													<FormLabel>Client ID</FormLabel>
+													<FormControl>
+														<EnvVarInput
+															data-testid="mcpclient-input-oauth-client-id"
+															placeholder="Enter new OAuth client ID"
+															disabled={isDisabled}
+															value={field.value}
+															onChange={field.onChange}
+														/>
+													</FormControl>
+													{!isDisabled && (
+														<p className="text-muted-foreground text-xs">Leave empty to keep existing credentials unchanged.</p>
+													)}
+													<FormMessage />
+												</FormItem>
+											)}
+										/>
+										<FormField
+											control={form.control}
+											name="oauth_config.client_secret"
+											render={({ field }) => (
+												<FormItem className="flex flex-col gap-2">
+													<FormLabel>Client Secret</FormLabel>
+													<FormControl>
+														<EnvVarInput
+															data-testid="mcpclient-input-oauth-client-secret"
+															placeholder="Enter new OAuth client secret"
+															disabled={isDisabled}
+															hideValueWhenEnv
+															maskNonEnvValue
+															value={field.value}
+															onChange={field.onChange}
+														/>
+													</FormControl>
+													<FormMessage />
+												</FormItem>
+											)}
+										/>
+									</div>
 								</div>
-							</div>
+							) : null}
 							{/* Tools Section */}
 							<div className="space-y-4 pb-10">
 								<div className="flex items-center justify-between">
@@ -867,11 +961,11 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 															Add Virtual Key
 														</Button>
 													</PopoverTrigger>
-													<PopoverContent side="top" align="end" className="w-56 p-0">
+													<PopoverContent side="top" align="end" className="w-56 p-0" noPortal>
 														<div className="pb-1">
 															<Input
 																data-testid="mcpclient-virtualkey-search-input"
-																placeholder="Search virtual keys..."
+																placeholder="Start typing to search…"
 																value={vkSearch}
 																onChange={(e) => setVKSearch(e.target.value)}
 																onKeyDown={(e) => {
@@ -989,9 +1083,40 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 								)}
 							</div>
 						</div>
+
+						<div className="bg-card sticky bottom-0 z-10 flex justify-end gap-2 border-t px-8 py-4">
+							<Button type="button" variant="outline" onClick={onClose}>
+								Cancel
+							</Button>
+							<Button
+								type="submit"
+								disabled={isUpdating || (!form.formState.isDirty && !vkConfigsDirty) || !hasUpdateMCPClientAccess}
+								isLoading={isUpdating}
+							>
+								Save Changes
+							</Button>
+						</div>
 					</form>
 				</Form>
 			</SheetContent>
+			{oauthFlow && (
+				<OAuth2Authorizer
+					open={!!oauthFlow}
+					onClose={() => setOauthFlow(null)}
+					onSuccess={() => {
+						toast({ title: "Success", description: "MCP client OAuth credentials updated successfully" });
+						onSubmitSuccess();
+						onClose();
+					}}
+					onError={(error) => {
+						toast({ title: "Error", description: error, variant: "destructive" });
+					}}
+					authorizeUrl={oauthFlow.authorizeUrl}
+					oauthConfigId={oauthFlow.oauthConfigId}
+					mcpClientId={oauthFlow.mcpClientId}
+					isPerUserOauth={oauthFlow.isPerUserOauth}
+				/>
+			)}
 		</Sheet>
 	);
 }

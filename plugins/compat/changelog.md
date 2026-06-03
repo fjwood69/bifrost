@@ -1,2 +1,1 @@
-- feat: drops tools web_search and web_search_preview if model does not support it  
-- feat: flattens tool type namespace if provider does not support it
+- chore: upgraded core to v1.5.13 and framework to v1.3.13

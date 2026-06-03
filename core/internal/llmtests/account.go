@@ -27,77 +27,77 @@ const ProviderOpenAICustom = schemas.ModelProvider("openai-custom")
 
 // TestScenarios defines the comprehensive test scenarios
 type TestScenarios struct {
-	TextCompletion             bool
-	TextCompletionStream       bool
-	SimpleChat                 bool
-	CompletionStream           bool
-	MultiTurnConversation      bool
-	ToolCalls                  bool
-	ToolCallsStreaming         bool // Streaming tool calls functionality
-	MultipleToolCalls          bool
-	MultipleToolCallsStreaming bool // Streaming multiple tool calls (some providers only return 1 tool call in streaming)
-	End2EndToolCalling         bool
-	AutomaticFunctionCall      bool
-	ImageURL                   bool
-	ImageBase64                bool
-	MultipleImages             bool
-	FileBase64                 bool
-	FileURL                    bool
-	CompleteEnd2End            bool
-	SpeechSynthesis            bool // Text-to-speech functionality
-	SpeechSynthesisStream      bool // Streaming text-to-speech functionality
-	Transcription              bool // Speech-to-text functionality
-	TranscriptionStream        bool // Streaming speech-to-text functionality
-	Embedding                  bool // Embedding functionality
-	Reasoning                  bool // Reasoning/thinking functionality via Responses API
-	PromptCaching              bool // Prompt caching functionality
-	ListModels                 bool // List available models functionality
-	ImageGeneration            bool // Image generation functionality
-	ImageGenerationStream      bool // Streaming image generation functionality
-	ImageEdit                  bool // Image edit functionality
-	ImageEditStream            bool // Streaming image edit functionality
-	ImageVariation             bool // Image variation functionality
-	ImageVariationStream       bool // Streaming image variation functionality (if supported)
-	VideoGeneration            bool // Video generation functionality
-	VideoRetrieve              bool // Video retrieve functionality
-	VideoRemix                 bool // Video remix functionality (OpenAI only)
-	VideoDownload              bool // Video download functionality
-	VideoList                  bool // Video list functionality
-	VideoDelete                bool // Video delete functionality
-	BatchCreate                bool // Batch API create functionality
-	BatchList                  bool // Batch API list functionality
-	BatchRetrieve              bool // Batch API retrieve functionality
-	BatchCancel                bool // Batch API cancel functionality
-	BatchResults               bool // Batch API results functionality
-	FileUpload                 bool // File API upload functionality
-	FileList                   bool // File API list functionality
-	FileRetrieve               bool // File API retrieve functionality
-	FileDelete                 bool // File API delete functionality
-	FileContent                bool // File API content download functionality
-	FileBatchInput             bool // Whether batch create supports file-based input (InputFileID)
-	CountTokens                bool // Count tokens functionality
-	ChatAudio                  bool // Chat completion with audio input/output functionality
-	StructuredOutputs          bool // Structured outputs (JSON schema) functionality
-	WebSearchTool              bool // Web search tool functionality
-	ContainerCreate            bool // Container API create functionality
-	ContainerList              bool // Container API list functionality
-	ContainerRetrieve          bool // Container API retrieve functionality
-	ContainerDelete            bool // Container API delete functionality
-	ContainerFileCreate        bool // Container File API create functionality
-	ContainerFileList          bool // Container File API list functionality
-	ContainerFileRetrieve      bool // Container File API retrieve functionality
-	ContainerFileContent       bool // Container File API content functionality
-	ContainerFileDelete        bool // Container File API delete functionality
-	PassThroughExtraParams     bool // Pass through extra params functionality
-	Rerank                     bool // Rerank functionality
-	PassthroughAPI             bool // Raw HTTP passthrough API (Passthrough + PassthroughStream)
-	WebSocketResponses         bool // WebSocket Responses API mode
-	Realtime                   bool // Realtime API (bidirectional audio/text)
-	Compaction                 bool // Server-side compaction (context management)
-	InterleavedThinking        bool // Interleaved thinking between tool calls (beta)
-	FastMode                   bool // Fast mode for Opus 4.6 (beta: research preview)
-	EagerInputStreaming           bool // Fine-grained tool input streaming (Anthropic fine-grained-tool-streaming-2025-05-14)
-	ServerToolsViaOpenAIEndpoint  bool // Anthropic server-tool shapes in tools[] via /v1/chat/completions (web_search / web_fetch / code_execution)
+	TextCompletion               bool
+	TextCompletionStream         bool
+	SimpleChat                   bool
+	CompletionStream             bool
+	MultiTurnConversation        bool
+	ToolCalls                    bool
+	ToolCallsStreaming           bool // Streaming tool calls functionality
+	MultipleToolCalls            bool
+	MultipleToolCallsStreaming   bool // Streaming multiple tool calls (some providers only return 1 tool call in streaming)
+	End2EndToolCalling           bool
+	AutomaticFunctionCall        bool
+	ImageURL                     bool
+	ImageBase64                  bool
+	MultipleImages               bool
+	FileBase64                   bool
+	FileURL                      bool
+	CompleteEnd2End              bool
+	SpeechSynthesis              bool // Text-to-speech functionality
+	SpeechSynthesisStream        bool // Streaming text-to-speech functionality
+	Transcription                bool // Speech-to-text functionality
+	TranscriptionStream          bool // Streaming speech-to-text functionality
+	Embedding                    bool // Embedding functionality
+	Reasoning                    bool // Reasoning/thinking functionality via Responses API
+	PromptCaching                bool // Prompt caching functionality
+	ListModels                   bool // List available models functionality
+	ImageGeneration              bool // Image generation functionality
+	ImageGenerationStream        bool // Streaming image generation functionality
+	ImageEdit                    bool // Image edit functionality
+	ImageEditStream              bool // Streaming image edit functionality
+	ImageVariation               bool // Image variation functionality
+	ImageVariationStream         bool // Streaming image variation functionality (if supported)
+	VideoGeneration              bool // Video generation functionality
+	VideoRetrieve                bool // Video retrieve functionality
+	VideoRemix                   bool // Video remix functionality (OpenAI only)
+	VideoDownload                bool // Video download functionality
+	VideoList                    bool // Video list functionality
+	VideoDelete                  bool // Video delete functionality
+	BatchCreate                  bool // Batch API create functionality
+	BatchList                    bool // Batch API list functionality
+	BatchRetrieve                bool // Batch API retrieve functionality
+	BatchCancel                  bool // Batch API cancel functionality
+	BatchResults                 bool // Batch API results functionality
+	FileUpload                   bool // File API upload functionality
+	FileList                     bool // File API list functionality
+	FileRetrieve                 bool // File API retrieve functionality
+	FileDelete                   bool // File API delete functionality
+	FileContent                  bool // File API content download functionality
+	FileBatchInput               bool // Whether batch create supports file-based input (InputFileID)
+	CountTokens                  bool // Count tokens functionality
+	ChatAudio                    bool // Chat completion with audio input/output functionality
+	StructuredOutputs            bool // Structured outputs (JSON schema) functionality
+	WebSearchTool                bool // Web search tool functionality
+	ContainerCreate              bool // Container API create functionality
+	ContainerList                bool // Container API list functionality
+	ContainerRetrieve            bool // Container API retrieve functionality
+	ContainerDelete              bool // Container API delete functionality
+	ContainerFileCreate          bool // Container File API create functionality
+	ContainerFileList            bool // Container File API list functionality
+	ContainerFileRetrieve        bool // Container File API retrieve functionality
+	ContainerFileContent         bool // Container File API content functionality
+	ContainerFileDelete          bool // Container File API delete functionality
+	PassThroughExtraParams       bool // Pass through extra params functionality
+	Rerank                       bool // Rerank functionality
+	PassthroughAPI               bool // Raw HTTP passthrough API (Passthrough + PassthroughStream)
+	WebSocketResponses           bool // WebSocket Responses API mode
+	Realtime                     bool // Realtime API (bidirectional audio/text)
+	Compaction                   bool // Server-side compaction (context management)
+	InterleavedThinking          bool // Interleaved thinking between tool calls (beta)
+	FastMode                     bool // Fast mode for Opus 4.6 (beta: research preview)
+	EagerInputStreaming          bool // Fine-grained tool input streaming (Anthropic fine-grained-tool-streaming-2025-05-14)
+	ServerToolsViaOpenAIEndpoint bool // Anthropic server-tool shapes in tools[] via /v1/chat/completions (web_search / web_fetch / code_execution)
 }
 
 // ComprehensiveTestConfig extends TestConfig with additional scenarios
@@ -204,12 +204,6 @@ func replicateProviderTestKeys() []schemas.Key {
 	}
 }
 
-// ReplicateDirectKeyForListModels returns the key used for Replicate ListModels (deployments endpoint).
-// List-models tests set it on the context as schemas.BifrostContextKeyDirectKey so Bifrost passes only this key.
-func ReplicateDirectKeyForListModels() schemas.Key {
-	return replicateProviderTestKeys()[0]
-}
-
 // GetKeysForProvider returns the API keys and associated models for a given provider.
 func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
 	switch providerKey {
@@ -249,6 +243,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 					"claude-3.7-sonnet": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
 					"claude-4-sonnet":   "global.anthropic.claude-sonnet-4-20250514-v1:0",
 					"claude-4.5-sonnet": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+					"claude-4.6-sonnet": "global.anthropic.claude-sonnet-4-6",
 					"claude-4.5-haiku":  "global.anthropic.claude-haiku-4-5-20251001-v1:0",
 				},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
@@ -267,6 +262,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 					"claude-3.7-sonnet": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
 					"claude-4-sonnet":   "global.anthropic.claude-sonnet-4-20250514-v1:0",
 					"claude-4.5-sonnet": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+					"claude-4.6-sonnet": "global.anthropic.claude-sonnet-4-6",
 					"claude-4.5-haiku":  "global.anthropic.claude-haiku-4-5-20251001-v1:0",
 				},
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
@@ -315,7 +311,6 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint:     *schemas.NewEnvVar("env.AZURE_ENDPOINT"),
-					APIVersion:   schemas.NewEnvVar("env.AZURE_API_VERSION"),
 					ClientID:     schemas.NewEnvVar("env.AZURE_CLIENT_ID"),
 					ClientSecret: schemas.NewEnvVar("env.AZURE_CLIENT_SECRET"),
 					TenantID:     schemas.NewEnvVar("env.AZURE_TENANT_ID"),
@@ -333,13 +328,12 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 					"gpt-4o-mini-audio-preview": "gpt-4o-mini-audio-preview",
 				},
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint:   *schemas.NewEnvVar("env.AZURE_ENDPOINT"),
-					APIVersion: schemas.NewEnvVar("env.AZURE_API_VERSION"),
+					Endpoint: *schemas.NewEnvVar("env.AZURE_ENDPOINT"),
 				},
 			},
 		}, nil
 	case schemas.Vertex:
-		//https://aiplatform.googleapis.com/v1/projects/maxim-development-433105/locations/global/publishers/google/models/veo-3.1-generate-preview:fetchPredictOperation
+		// https://aiplatform.googleapis.com/v1/projects/maxim-development-433105/locations/global/publishers/google/models/veo-3.1-generate-preview:fetchPredictOperation
 
 		return []schemas.Key{
 			{
@@ -495,9 +489,31 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.FIREWORKS_API_KEY"),
-				Models:         []string{},
+				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.Ollama:
+		return []schemas.Key{
+			{
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+				OllamaKeyConfig: &schemas.OllamaKeyConfig{
+					URL: *schemas.NewEnvVar("env.OLLAMA_BASE_URL"),
+				},
+			},
+		}, nil
+	case schemas.VLLM:
+		return []schemas.Key{
+			{
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+				VLLMKeyConfig: &schemas.VLLMKeyConfig{
+					URL: *schemas.NewEnvVar("env.VLLM_BASE_URL"),
+				},
 			},
 		}, nil
 	default:
@@ -749,7 +765,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.OpenRouter:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 120,
+				DefaultRequestTimeoutInSeconds: 300,
 				MaxRetries:                     10, // OpenRouter can be variable (proxy service)
 				RetryBackoffInitial:            1 * time.Second,
 				RetryBackoffMax:                12 * time.Second,
@@ -1039,7 +1055,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 	},
 	{
 		Provider:             schemas.Azure,
-		ChatModel:            "gpt-4o",
+		ChatModel:            "gpt-5-pro",
 		TextModel:            "", // Azure doesn't support text completion in newer models
 		ChatAudioModel:       "gpt-4o-mini-audio-preview",
 		TranscriptionModel:   "whisper-1",
@@ -1073,17 +1089,26 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageVariation:             false, // Azure does not support image variation
 			ImageVariationStream:       false, // Azure does not support streaming image variation
 			ListModels:                 true,
-			BatchCreate:                true, // Azure supports batch API
-			BatchList:                  true, // Azure supports batch API
-			BatchRetrieve:              true, // Azure supports batch API
-			BatchCancel:                true, // Azure supports batch API
-			BatchResults:               true, // Azure supports batch API
-			FileUpload:                 true, // Azure supports file API
-			FileList:                   true, // Azure supports file API
-			FileRetrieve:               true, // Azure supports file API
-			FileDelete:                 true, // Azure supports file API
-			FileContent:                true, // Azure supports file API
-			ChatAudio:                  true, // Azure supports chat audio
+			BatchCreate:                true,  // Azure supports batch API
+			BatchList:                  true,  // Azure supports batch API
+			BatchRetrieve:              true,  // Azure supports batch API
+			BatchCancel:                true,  // Azure supports batch API
+			BatchResults:               true,  // Azure supports batch API
+			FileUpload:                 true,  // Azure supports file API
+			FileList:                   true,  // Azure supports file API
+			FileRetrieve:               true,  // Azure supports file API
+			FileDelete:                 true,  // Azure supports file API
+			FileContent:                true,  // Azure supports file API
+			ChatAudio:                  true,  // Azure supports chat audio
+			ContainerCreate:            true,  // Azure supports container API
+			ContainerList:              false, // Azure hangs on this call
+			ContainerRetrieve:          true,  // Azure supports container API
+			ContainerDelete:            true,  // Azure supports container API
+			ContainerFileCreate:        true,  // Azure supports container file API
+			ContainerFileList:          true,  // Azure supports container file API
+			ContainerFileRetrieve:      true,  // Azure supports container file API
+			ContainerFileContent:       true,  // Azure supports container file API
+			ContainerFileDelete:        true,  // Azure supports container file API
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -1494,7 +1519,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageGeneration:            true,
 			ImageGenerationStream:      false,
 		},
-	}, {
+	},
+	{
 		Provider:           schemas.VLLM,
 		ChatModel:          "Qwen/Qwen3-0.6B",
 		TextModel:          "Qwen/Qwen3-0.6B",

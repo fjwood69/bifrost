@@ -32,6 +32,17 @@ func GetRandomString(length int) string {
 	return string(b)
 }
 
+// EnvVarAsString returns the wire form used when serializing *EnvVar as a string.
+func EnvVarAsString(e *EnvVar) string {
+	if e == nil {
+		return ""
+	}
+	if e.IsFromEnv() {
+		return e.EnvVar
+	}
+	return e.GetValue()
+}
+
 // knownProvidersMu protects concurrent access to knownProviders.
 var knownProvidersMu sync.RWMutex
 
@@ -835,8 +846,8 @@ func DeepCopyChatTool(original ChatTool) ChatTool {
 
 		if original.Function.Parameters != nil {
 			copyParams := &ToolFunctionParameters{
-				Type:     original.Function.Parameters.Type,
-				keyOrder: original.Function.Parameters.keyOrder,
+				Type:                original.Function.Parameters.Type,
+				keyOrder:            original.Function.Parameters.keyOrder,
 				explicitEmptyObject: original.Function.Parameters.explicitEmptyObject,
 			}
 
@@ -1263,14 +1274,35 @@ func IsNovaModel(model string) bool {
 	return strings.Contains(model, "nova")
 }
 
+func IsNova2Model(model string) bool {
+	return strings.Contains(model, "nova-2") && (strings.Contains(model, "lite") || strings.Contains(model, "sonic"))
+}
+
 // IsAnthropicModel checks if the model is an Anthropic model.
 func IsAnthropicModel(model string) bool {
 	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")
 }
 
+// BedrockModelSupportsCachePoints reports whether the Bedrock model supports
+// explicit prompt-caching cache points in the Converse API request.
+func BedrockModelSupportsCachePoints(model string) bool {
+	return IsAnthropicModel(model) || IsNovaModel(model)
+}
+
 // IsMistralModel checks if the model is a Mistral or Codestral model.
 func IsMistralModel(model string) bool {
 	return strings.Contains(model, "mistral") || strings.Contains(model, "codestral")
+}
+
+// IsLlamaModel checks if the model is a Meta Llama model.
+//
+// Used by the Bedrock provider to gate tool_choice handling: Bedrock Converse
+// rejects toolConfig.toolChoice.tool on Meta Llama variants with HTTP 400
+// ("This model doesn't support the toolConfig.toolChoice.tool field"). See
+// AWS docs for the per-model tool_choice support matrix:
+// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolChoice.html
+func IsLlamaModel(model string) bool {
+	return strings.Contains(model, "llama")
 }
 
 func IsGeminiModel(model string) bool {
@@ -1279,6 +1311,10 @@ func IsGeminiModel(model string) bool {
 
 func IsVeoModel(model string) bool {
 	return strings.Contains(model, "veo")
+}
+
+func IsGemmaModel(model string) bool {
+	return strings.Contains(model, "gemma")
 }
 
 // IsImagenModel checks if the model is an Imagen model.
@@ -1395,4 +1431,56 @@ func SameBaseModel(a, b string) bool {
 
 	// Compare normalized base names.
 	return BaseModelName(a) == BaseModelName(b)
+}
+
+// DSML markers used by DeepSeek for tool calls.
+const (
+	DSMLMarker                  = "<｜DSML｜"
+	DSMLMarkerFunctionCalls     = "<｜DSML｜function_calls"
+	DSMLMarkerFunctionCallStart = "<｜function_call>"
+	DSMLMarkerFunctionCallEnd   = "</｜function_call>"
+)
+
+// StripDeepSeekMarkers removes DeepSeek DSML tool call markers from a string.
+// These markers (e.g. <｜DSML｜function_calls ...>) can leak into text content
+// when DeepSeek is routed via OpenAI-compatible providers like Parasail.
+// Truncates at the first <｜ occurrence so content inside markers is also removed.
+func StripDeepSeekMarkers(s string) string {
+	idx := strings.Index(s, "<｜")
+	if idx < 0 {
+		return s
+	}
+	return s[:idx]
+}
+
+// StripDeepSeekMarkersWithState strips DSML markers from a string using a buffer for partial markers
+// across SSE chunks and a suppression flag for subsequent content deltas.
+func StripDeepSeekMarkersWithState(s string, buffer *string, suppressed *bool) string {
+	if *suppressed {
+		return ""
+	}
+
+	// Append current content to buffer
+	full := *buffer + s
+
+	if strings.Contains(full, DSMLMarker) ||
+		strings.Contains(full, DSMLMarkerFunctionCallStart) ||
+		strings.Contains(full, DSMLMarkerFunctionCallEnd) {
+		*suppressed = true
+		*buffer = "" // Clear buffer once detected
+		return ""
+	}
+
+	// Keep only the last 20 bytes to catch split markers in the next delta.
+	// The marker "<｜DSML｜" is 11 bytes in UTF-8.
+	const maxBufferLen = 20
+	if len(full) > maxBufferLen {
+		*buffer = full[len(full)-maxBufferLen:]
+	} else {
+		*buffer = full
+	}
+
+	// For the initial delta that contains the start of a marker but not the whole thing yet,
+	// we use StripDeepSeekMarkers which handles trailing partial tokens.
+	return StripDeepSeekMarkers(s)
 }

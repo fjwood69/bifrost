@@ -22,10 +22,11 @@ type ModelCatalog struct {
 	logger schemas.Logger
 
 	// Configuration fields (protected by syncMu)
-	pricingURL   string
-	syncInterval time.Duration
-	lastSyncedAt time.Time
-	syncMu       sync.RWMutex
+	pricingURL         string
+	modelParametersURL string
+	syncInterval       time.Duration
+	lastSyncedAt       time.Time
+	syncMu             sync.RWMutex
 
 	shouldSyncGate func(ctx context.Context) bool
 	afterSyncHook  func(ctx context.Context)
@@ -69,6 +70,10 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	if config.PricingURL != nil {
 		pricingURL = *config.PricingURL
 	}
+	modelParametersURL := DefaultModelParametersURL
+	if config.ModelParametersURL != nil && *config.ModelParametersURL != "" {
+		modelParametersURL = *config.ModelParametersURL
+	}
 	syncInterval := DefaultSyncInterval
 	if config.PricingSyncInterval != nil {
 		syncInterval = time.Duration(*config.PricingSyncInterval) * time.Second
@@ -81,6 +86,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 
 	mc := &ModelCatalog{
 		pricingURL:             pricingURL,
+		modelParametersURL:     modelParametersURL,
 		syncInterval:           syncInterval,
 		configStore:            configStore,
 		logger:                 logger,
@@ -122,12 +128,19 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 				return nil
 			}
 			var p struct {
-				MaxOutputTokens *int `json:"max_output_tokens"`
+				MaxOutputTokens       *int  `json:"max_output_tokens"`
+				VertexMultiRegionOnly *bool `json:"vertex_multi_region_only"`
 			}
-			if err := json.Unmarshal([]byte(params.Data), &p); err != nil || p.MaxOutputTokens == nil {
+			if err := json.Unmarshal([]byte(params.Data), &p); err != nil {
 				return nil
 			}
-			return &providerUtils.ModelParams{MaxOutputTokens: p.MaxOutputTokens}
+			if p.MaxOutputTokens == nil && p.VertexMultiRegionOnly == nil {
+				return nil
+			}
+			return &providerUtils.ModelParams{
+				MaxOutputTokens:         p.MaxOutputTokens,
+				IsVertexMultiRegionOnly: p.VertexMultiRegionOnly,
+			}
 		})
 		var wg sync.WaitGroup
 		var pricingErr, paramsErr error
@@ -265,6 +278,11 @@ func (mc *ModelCatalog) UpdateSyncConfig(ctx context.Context, config *Config) er
 		mc.pricingURL = *config.PricingURL
 	}
 
+	mc.modelParametersURL = DefaultModelParametersURL
+	if config.ModelParametersURL != nil && *config.ModelParametersURL != "" {
+		mc.modelParametersURL = *config.ModelParametersURL
+	}
+
 	mc.syncInterval = DefaultSyncInterval
 	if config.PricingSyncInterval != nil {
 		mc.syncInterval = time.Duration(*config.PricingSyncInterval) * time.Second
@@ -345,6 +363,12 @@ func (mc *ModelCatalog) getPricingURL() string {
 	mc.syncMu.RLock()
 	defer mc.syncMu.RUnlock()
 	return mc.pricingURL
+}
+
+func (mc *ModelCatalog) getModelParametersURL() string {
+	mc.syncMu.RLock()
+	defer mc.syncMu.RUnlock()
+	return mc.modelParametersURL
 }
 
 // IsRequestTypeSupported checks if a model supports chat completion.

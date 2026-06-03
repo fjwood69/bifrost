@@ -30,6 +30,25 @@ export type ProviderName = (typeof KnownProvidersNames)[number];
 
 export const ProviderNames: readonly ProviderName[] = KnownProvidersNames;
 
+// Built-in providers whose Bifrost implementation supports embedding requests.
+// Custom providers must instead be checked via custom_provider_config.allowed_requests.embedding.
+export const EmbeddingSupportedProviders: readonly ProviderName[] = [
+	"azure",
+	"bedrock",
+	"cohere",
+	"fireworks",
+	"gemini",
+	"huggingface",
+	"mistral",
+	"nebius",
+	"ollama",
+	"openai",
+	"openrouter",
+	"sgl",
+	"vertex",
+	"vllm",
+] as const;
+
 export const Statuses = ["success", "error", "processing", "cancelled"] as const;
 
 export const RequestTypes = [
@@ -297,12 +316,14 @@ export const RoutingEngineUsedLabels = {
 	"routing-rule": "Routing Rule",
 	governance: "Governance",
 	loadbalancing: "Loadbalancing",
+	"model-catalog": "Model Catalog",
 } as const;
 
 export const RoutingEngineUsedColors = {
-	"routing-rule": "bg-blue-100 text-blue-800",
-	governance: "bg-green-100 text-green-800",
-	loadbalancing: "bg-red-100 text-red-800",
+	"routing-rule": "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300",
+	governance: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300",
+	loadbalancing: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300",
+	"model-catalog": "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300",
 } as const;
 
 export type Status = (typeof Statuses)[number];

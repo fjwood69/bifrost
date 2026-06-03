@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/bytedance/sonic"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -97,7 +100,7 @@ func ValidateToolsForProvider(tools []schemas.ResponsesTool, provider schemas.Mo
 	for _, tool := range tools {
 		switch tool.Type {
 		case schemas.ResponsesToolTypeWebSearch, schemas.ResponsesToolTypeWebSearchPreview:
-			if !features.WebSearch {
+			if !features.WebSearch && !features.WebSearchNova {
 				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
 			}
 		case schemas.ResponsesToolTypeWebFetch:
@@ -105,7 +108,7 @@ func ValidateToolsForProvider(tools []schemas.ResponsesTool, provider schemas.Mo
 				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
 			}
 		case schemas.ResponsesToolTypeCodeInterpreter:
-			if !features.CodeExecution {
+			if !features.CodeExecution && !features.CodeExecNova {
 				return fmt.Errorf("tool type '%s' is not supported by provider '%s'", tool.Type, provider)
 			}
 		case schemas.ResponsesToolTypeComputerUsePreview:
@@ -215,8 +218,21 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 			req.OutputConfig = nil
 		}
 	}
+	// output_config.effort — model-gated per
+	// https://platform.claude.com/docs/en/build-with-claude/effort. Models
+	// outside the supported set return: "This model does not support the
+	// effort parameter."
+	if req.OutputConfig != nil && req.OutputConfig.Effort != nil && !SupportsEffortParameter(model) {
+		req.OutputConfig.Effort = nil
+		if req.OutputConfig.Format == nil && req.OutputConfig.TaskBudget == nil {
+			req.OutputConfig = nil
+		}
+	}
 	if req.InferenceGeo != nil && !features.InferenceGeo {
 		req.InferenceGeo = nil
+	}
+	if req.ServiceTier != nil && !features.ServiceTier {
+		req.ServiceTier = nil
 	}
 	// cache_control.scope — strip on providers without PromptCachingScope
 	// support at every slot scope can live: top-level request, tools, system
@@ -319,7 +335,7 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	}
 }
 
-// stripUnsupportedFieldsFromRawBody is the raw-JSON equivalent of
+// StripUnsupportedFieldsFromRawBody is the raw-JSON equivalent of
 // StripUnsupportedAnthropicFields. It mutates the request body bytes using
 // sjson/gjson (preserving key order for prompt caching) so the raw-body
 // passthrough path has behavioural parity with the typed conversion path.
@@ -338,7 +354,7 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 // Unknown providers: safe default — no stripping (parity with the typed helper).
 // Unknown edit types in context_management: left in place for the provider
 // to reject (parity with the typed helper).
-func stripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelProvider, model string) ([]byte, error) {
+func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelProvider, model string) ([]byte, error) {
 	if len(jsonBody) == 0 {
 		return jsonBody, nil
 	}
@@ -371,6 +387,14 @@ func stripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "inference_geo")
 		if err != nil {
 			return nil, fmt.Errorf("strip raw inference_geo: %w", err)
+		}
+	}
+
+	// service_tier — Vertex uses HTTP headers instead of a request body field
+	if !features.ServiceTier && providerUtils.JSONFieldExists(jsonBody, "service_tier") {
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "service_tier")
+		if err != nil {
+			return nil, fmt.Errorf("strip raw service_tier: %w", err)
 		}
 	}
 
@@ -437,6 +461,23 @@ func stripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		}
 	}
 
+	// output_config.effort — model-gated per
+	// https://platform.claude.com/docs/en/build-with-claude/effort.
+	// Mirrors the typed path; same cleanup of an empty parent.
+	if providerUtils.JSONFieldExists(jsonBody, "output_config.effort") &&
+		!SupportsEffortParameter(model) {
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "output_config.effort")
+		if err != nil {
+			return nil, fmt.Errorf("strip raw output_config.effort: %w", err)
+		}
+		if oc := providerUtils.GetJSONField(jsonBody, "output_config"); oc.IsObject() && len(oc.Map()) == 0 {
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "output_config")
+			if err != nil {
+				return nil, fmt.Errorf("strip raw output_config: %w", err)
+			}
+		}
+	}
+
 	// top-level cache_control.scope
 	if !features.PromptCachingScope && providerUtils.JSONFieldExists(jsonBody, "cache_control.scope") {
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "cache_control.scope")
@@ -453,36 +494,44 @@ func stripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		}
 	}
 
-	// context_management.edits[] — gate per edit.type.
-	if editsResult := providerUtils.GetJSONField(jsonBody, "context_management.edits"); editsResult.Exists() && editsResult.IsArray() {
-		edits := editsResult.Array()
-		// Collect indices to drop (iterate forwards, delete in reverse).
-		dropIndices := []int{}
-		for i, edit := range edits {
-			editType := edit.Get("type").String()
-			keep := true
-			switch editType {
-			case string(ContextManagementEditTypeCompact):
-				keep = features.Compaction
-			case string(ContextManagementEditTypeClearToolUses), string(ContextManagementEditTypeClearThinking):
-				keep = features.ContextEditing
-			}
-			if !keep {
-				dropIndices = append(dropIndices, i)
-			}
-		}
-		if len(dropIndices) == len(edits) && len(edits) > 0 {
-			// All edits unsupported — drop the whole context_management.
+	// context_management — if the provider doesn't accept the field at all (e.g. Vertex),
+	// drop it entirely. Otherwise gate per edit.type.
+	if providerUtils.JSONFieldExists(jsonBody, "context_management") {
+		if !features.ContextManagementField {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "context_management")
 			if err != nil {
 				return nil, fmt.Errorf("strip raw context_management: %w", err)
 			}
-		} else {
-			for i := len(dropIndices) - 1; i >= 0; i-- {
-				path := fmt.Sprintf("context_management.edits.%d", dropIndices[i])
-				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, path)
+		} else if editsResult := providerUtils.GetJSONField(jsonBody, "context_management.edits"); editsResult.Exists() && editsResult.IsArray() {
+			edits := editsResult.Array()
+			// Collect indices to drop (iterate forwards, delete in reverse).
+			dropIndices := []int{}
+			for i, edit := range edits {
+				editType := edit.Get("type").String()
+				keep := true
+				switch editType {
+				case string(ContextManagementEditTypeCompact):
+					keep = features.Compaction
+				case string(ContextManagementEditTypeClearToolUses), string(ContextManagementEditTypeClearThinking):
+					keep = features.ContextEditing
+				}
+				if !keep {
+					dropIndices = append(dropIndices, i)
+				}
+			}
+			if len(dropIndices) == len(edits) {
+				// No edits to keep (either empty input or all unsupported) — drop the whole context_management.
+				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "context_management")
 				if err != nil {
-					return nil, fmt.Errorf("strip raw context_management.edits[%d]: %w", dropIndices[i], err)
+					return nil, fmt.Errorf("strip raw context_management: %w", err)
+				}
+			} else {
+				for i := len(dropIndices) - 1; i >= 0; i-- {
+					path := fmt.Sprintf("context_management.edits.%d", dropIndices[i])
+					jsonBody, err = providerUtils.DeleteJSONField(jsonBody, path)
+					if err != nil {
+						return nil, fmt.Errorf("strip raw context_management.edits[%d]: %w", dropIndices[i], err)
+					}
 				}
 			}
 		}
@@ -492,6 +541,17 @@ func stripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 	if toolsResult := providerUtils.GetJSONField(jsonBody, "tools"); toolsResult.Exists() && toolsResult.IsArray() {
 		for i := range toolsResult.Array() {
 			base := fmt.Sprintf("tools.%d", i)
+			// Server tools with a nested `model` field (e.g. advisor_20260301)
+			// expect a bare Anthropic model id. Strip the prefix when
+			// it's a known Bifrost provider; bare ids pass through unchanged.
+			if modelResult := providerUtils.GetJSONField(jsonBody, base+".model"); modelResult.Exists() && modelResult.Type == gjson.String {
+				if prefixProvider, bare := schemas.ParseModelString(modelResult.String(), ""); prefixProvider != "" {
+					jsonBody, err = providerUtils.SetJSONField(jsonBody, base+".model", bare)
+					if err != nil {
+						return nil, fmt.Errorf("strip raw %s.model prefix: %w", base, err)
+					}
+				}
+			}
 			if !features.AdvancedToolUse {
 				if providerUtils.JSONFieldExists(jsonBody, base+".defer_loading") {
 					jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".defer_loading")
@@ -614,6 +674,37 @@ func SupportsNativeEffort(model string) bool {
 		strings.Contains(model, "4-6") || strings.Contains(model, "4.6")
 }
 
+// SupportsEffortParameter returns true if the model accepts the
+// output_config.effort parameter. Per
+// https://platform.claude.com/docs/en/build-with-claude/effort the supported
+// set is: Claude Mythos Preview, Opus 4.7, Opus 4.6, Sonnet 4.6, and Opus 4.5.
+// All other models reject effort with a 400:
+//
+//	"This model does not support the effort parameter."
+//
+// This is intentionally separate from SupportsAdaptiveThinking: a model can
+// support the effort knob without supporting adaptive thinking (Opus 4.5),
+// and adaptive thinking is a distinct surface (thinking.type:"adaptive")
+// from effort. Future models may shift either flag independently.
+func SupportsEffortParameter(model string) bool {
+	m := strings.ToLower(model)
+	if strings.Contains(m, "mythos") {
+		return true
+	}
+	if strings.Contains(m, "haiku") {
+		return false
+	}
+	if strings.Contains(m, "opus") {
+		return strings.Contains(m, "4-5") || strings.Contains(m, "4.5") ||
+			strings.Contains(m, "4-6") || strings.Contains(m, "4.6") ||
+			strings.Contains(m, "4-7") || strings.Contains(m, "4.7")
+	}
+	if strings.Contains(m, "sonnet") {
+		return strings.Contains(m, "4-6") || strings.Contains(m, "4.6")
+	}
+	return false
+}
+
 // SupportsFastMode returns true if the model supports speed:"fast" (research
 // preview). Per Anthropic's fast-mode docs, only Opus 4.6 supports it;
 // requests carrying speed:"fast" to any other model are rejected with 400.
@@ -643,6 +734,115 @@ func SupportsAdaptiveThinking(model string) bool {
 	return strings.Contains(model, "opus") || strings.Contains(model, "sonnet")
 }
 
+// Computer-use tool generations.
+//   - "20251124" — Opus 4.7, Opus 4.6, Sonnet 4.6, Opus 4.5
+//   - "20250124" — everything else (Sonnet 4.5, Haiku 4.5, Opus 4.1, Sonnet 4, Opus 4, Sonnet 3.7)
+//
+// The bash tool is generation-invariant (always bash_20250124).
+const (
+	ComputerUseGen20251124 = "20251124"
+	ComputerUseGen20250124 = "20250124"
+)
+
+// ComputerUseGeneration returns the tool-version generation a Claude model
+// uses for computer-use / text-editor tools. This drives:
+//   - Which beta header to inject (computer-use-2025-11-24 vs 2025-01-24).
+//   - Which computer_*/text_editor_* type the upstream API will accept.
+//   - Which `name` literal Anthropic's Pydantic validator demands for text_editor.
+func ComputerUseGeneration(model string) string {
+	m := strings.ToLower(model)
+	// Opus 4.7+ falls into the new generation.
+	if IsOpus47(m) {
+		return ComputerUseGen20251124
+	}
+	// Opus 4.6 / Sonnet 4.6 / Opus 4.5 also use the new generation.
+	if strings.Contains(m, "opus") {
+		if strings.Contains(m, "4-5") || strings.Contains(m, "4.5") ||
+			strings.Contains(m, "4-6") || strings.Contains(m, "4.6") {
+			return ComputerUseGen20251124
+		}
+	}
+	if strings.Contains(m, "sonnet") {
+		if strings.Contains(m, "4-6") || strings.Contains(m, "4.6") {
+			return ComputerUseGen20251124
+		}
+	}
+	return ComputerUseGen20250124
+}
+
+// TextEditorGeneration returns the text_editor tool-version generation for a model.
+// Differs from ComputerUseGeneration because Anthropic's per-tool support matrix
+// is not always uniform - e.g., sonnet-4-5 supports old-gen computer_20250124 but
+// requires new-gen text_editor_20250728+.
+//
+// Models requiring new-gen text_editor:
+//   - Opus 4.7+ (matches IsOpus47)
+//   - Opus 4.5 / 4.6
+//   - Sonnet 4.5 / 4.6 (sonnet-4-5 differs from ComputerUseGeneration which keeps it old-gen)
+func TextEditorGeneration(model string) string {
+	m := strings.ToLower(model)
+	if IsOpus47(m) {
+		return ComputerUseGen20251124
+	}
+	if strings.Contains(m, "opus") {
+		if strings.Contains(m, "4-5") || strings.Contains(m, "4.5") ||
+			strings.Contains(m, "4-6") || strings.Contains(m, "4.6") {
+			return ComputerUseGen20251124
+		}
+	}
+	if strings.Contains(m, "sonnet") {
+		if strings.Contains(m, "4-5") || strings.Contains(m, "4.5") ||
+			strings.Contains(m, "4-6") || strings.Contains(m, "4.6") {
+			return ComputerUseGen20251124
+		}
+	}
+	return ComputerUseGen20250124
+}
+
+// NormalizedToolSpec returns the canonical {type, name} pair Anthropic's API
+// expects for a server tool, given the model's computer-use generation.
+// baseTool is the family name with no version suffix: "computer", "text_editor", or "bash".
+// Returns ("", "") if baseTool is unknown.
+func NormalizedToolSpec(generation, baseTool string) (toolType, toolName string) {
+	switch baseTool {
+	case "computer":
+		if generation == ComputerUseGen20251124 {
+			return string(AnthropicToolTypeComputer20251124), "computer"
+		}
+		return string(AnthropicToolTypeComputer20250124), "computer"
+	case "bash":
+		// bash_20250124 is generation-invariant per Anthropic's docs.
+		return string(AnthropicToolTypeBash20250124), "bash"
+	case "text_editor":
+		if generation == ComputerUseGen20251124 {
+			return string(AnthropicToolTypeTextEditor20250728), "str_replace_based_edit_tool"
+		}
+		return string(AnthropicToolTypeTextEditor20250124), "str_replace_editor"
+	}
+	return "", ""
+}
+
+// computerUseBaseTool extracts the family name from a versioned tool type.
+// Returns "" for tool types that are not part of the computer-use family.
+//
+// Examples:
+//
+//	computer_20251124       -> "computer"
+//	text_editor_20250728    -> "text_editor"
+//	bash_20250124           -> "bash"
+//	web_search_20250305     -> ""
+func computerUseBaseTool(toolType string) string {
+	switch {
+	case strings.HasPrefix(toolType, "computer_"):
+		return "computer"
+	case strings.HasPrefix(toolType, "text_editor_"):
+		return "text_editor"
+	case strings.HasPrefix(toolType, "bash_"):
+		return "bash"
+	}
+	return ""
+}
+
 // MapBifrostEffortToAnthropic maps a Bifrost effort level to an Anthropic effort level.
 // Anthropic supports "low", "medium", "high", "max"; Bifrost also has "minimal" which maps to "low".
 func MapBifrostEffortToAnthropic(effort string) string {
@@ -661,133 +861,16 @@ func setEffortOnOutputConfig(req *AnthropicMessageRequest, effort string) {
 	req.OutputConfig.Effort = &effort
 }
 
-func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, isStreaming bool, excludeFields []string) ([]byte, *schemas.BifrostError) {
-	// Large payload mode: body streams directly from the LP reader in completeRequest/
-	// setAnthropicRequestBody — skip all body building here (matches CheckContextAndGetRequestBody).
-	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
-		return nil, nil
-	}
-
-	var jsonBody []byte
-	var err error
-
-	// Check if raw request body should be used
-	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
-		jsonBody = request.GetRawRequestBody()
-
-		// Update model with provider model (using gjson/sjson to preserve key order for prompt caching)
-		if modelResult := providerUtils.GetJSONField(jsonBody, "model"); modelResult.Exists() {
-			if modelStr := modelResult.String(); modelStr != "" {
-				_, model := schemas.ParseModelString(modelStr, schemas.Anthropic)
-				jsonBody, err = providerUtils.SetJSONField(jsonBody, "model", model)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-				}
-			}
-		}
-		// Add max_tokens if not present
-		if !providerUtils.JSONFieldExists(jsonBody, "max_tokens") {
-			defaultMaxTokens := AnthropicDefaultMaxTokens
-			if modelResult := providerUtils.GetJSONField(jsonBody, "model"); modelResult.Exists() {
-				defaultMaxTokens = providerUtils.GetMaxOutputTokensOrDefault(modelResult.String(), AnthropicDefaultMaxTokens)
-			}
-			jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", defaultMaxTokens)
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-			}
-		}
-		// Add stream if streaming
-		if isStreaming {
-			jsonBody, err = providerUtils.SetJSONField(jsonBody, "stream", true)
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-			}
-		}
-		// Strip auto-injectable server-side tools to prevent conflicts with API auto-injection
-		jsonBody, err = StripAutoInjectableTools(jsonBody)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-		}
-		// Sanitize raw-body fields the target provider does not support.
-		// Behavioural parity with StripUnsupportedAnthropicFields on the typed path.
-		// Feature gating keyed to schemas.Anthropic (not providerName) to match
-		// the typed path below which also hardcodes schemas.Anthropic — ensures
-		// custom Anthropic aliases get identical feature lookup in both modes.
-		jsonBody, err = stripUnsupportedFieldsFromRawBody(jsonBody, schemas.Anthropic, "")
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-		}
-		// Auto-inject matching anthropic-beta headers for fields the sanitizer
-		// preserved (speed, task_budget, cache_control.scope, input_examples,
-		// defer_loading, allowed_callers, eager_input_streaming, mcp_servers,
-		// structured outputs, etc). Without this, raw-body callers who supply
-		// gated fields but not headers would 400 upstream. Single source of
-		// truth: probe-unmarshal into the typed struct and reuse the typed
-		// path's header walker.
-		var probe AnthropicMessageRequest
-		if err := schemas.Unmarshal(jsonBody, &probe); err == nil {
-			AddMissingBetaHeadersToContext(ctx, &probe, schemas.Anthropic)
-		}
-		// Remove excluded fields
-		for _, field := range excludeFields {
-			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-			}
-		}
-	} else {
-		// Convert request to Anthropic format
-		reqBody, convErr := ToAnthropicResponsesRequest(ctx, request)
-		if convErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, convErr)
-		}
-		if reqBody == nil {
-			return nil, providerUtils.NewBifrostOperationError("request body is not provided", nil)
-		}
-		AddMissingBetaHeadersToContext(ctx, reqBody, schemas.Anthropic)
-		if isStreaming {
-			reqBody.Stream = schemas.Ptr(true)
-		}
-		// Marshal struct to JSON bytes
-		jsonBody, err = providerUtils.MarshalSorted(reqBody)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err))
-		}
-		// Merge ExtraParams into the JSON if passthrough is enabled
-		if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
-			extraParams := reqBody.GetExtraParams()
-			if len(extraParams) > 0 {
-				// Use MergeExtraParamsIntoJSON which preserves key order
-				jsonBody, err = providerUtils.MergeExtraParamsIntoJSON(jsonBody, extraParams)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-				}
-			}
-			// Remove excluded fields after merging (using sjson to preserve order)
-			for _, field := range excludeFields {
-				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-				}
-			}
-		} else if len(excludeFields) > 0 {
-			// Remove excluded fields using sjson to preserve key order
-			for _, field := range excludeFields {
-				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, field)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-				}
-			}
-		}
-	}
-
-	// delete fallbacks field
-	jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallbacks")
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-	}
-
-	return jsonBody, nil
+// getRequestBodyForResponses serializes a BifrostResponsesRequest into the Anthropic wire format.
+// It delegates to BuildAnthropicResponsesRequestBody with the appropriate provider and streaming config.
+func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, isStreaming bool, excludeFields []string, shouldSendBackRawRequest bool, shouldSendBackRawResponse bool) ([]byte, *schemas.BifrostError) {
+	return BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+		Provider:                  schemas.Anthropic,
+		IsStreaming:               isStreaming,
+		ExcludeFields:             excludeFields,
+		ShouldSendBackRawRequest:  shouldSendBackRawRequest,
+		ShouldSendBackRawResponse: shouldSendBackRawResponse,
+	})
 }
 
 // AddMissingBetaHeadersToContext analyzes the Anthropic request and adds missing beta headers to the context.
@@ -1049,6 +1132,10 @@ var providerToolVersionRemaps = map[schemas.ModelProvider][]ToolVersionRemap{
 	schemas.Vertex: {
 		// Vertex only supports basic web search, not dynamic filtering
 		{From: string(AnthropicToolTypeWebSearch20260209), To: string(AnthropicToolTypeWebSearch20250305)},
+		// Vertex AI's Anthropic surface lags Anthropic-direct on computer-use tool versions
+		// — computer_20251124 not yet accepted. Downgrade to the GA tag (name is the same
+		// "computer" for both, so no name rewrite needed).
+		{From: string(AnthropicToolTypeComputer20251124), To: string(AnthropicToolTypeComputer20250124)},
 		// Vertex does not support web fetch at all — no remap, these should error
 		// Vertex does not support code execution — no remap, these should error
 	},
@@ -1070,6 +1157,58 @@ var unsupportedRawToolTypes = map[schemas.ModelProvider][]string{
 	},
 }
 
+// doesWebSearchOrFetchAutoInjectCodeExecution reports whether the given web search/fetch tool type
+// automatically injects a code-execution beta header. Newer tool versions (2026-02-09 and later)
+// require it; older ones do not. Defaults to true for unrecognized types to preserve backward compatibility.
+func doesWebSearchOrFetchAutoInjectCodeExecution(toolType string) bool {
+	switch toolType {
+	case string(AnthropicToolTypeWebSearch20250305):
+		return false
+	case string(AnthropicToolTypeWebSearch20260209):
+		return true
+	case string(AnthropicToolTypeWebFetch20260309):
+		return true
+	case string(AnthropicToolTypeWebFetch20250910):
+		return false
+	case string(AnthropicToolTypeWebFetch20260209):
+		return true
+	}
+
+	// Keeping it for backward compatibility as this always used to be true
+	return true
+}
+
+// StripEmptyThinkingBlocks removes thinking content blocks where
+// "thinking" is an empty string. Anthropic rejects such blocks with a 400.
+func StripEmptyThinkingBlocks(jsonBody []byte) ([]byte, error) {
+	messagesResult := providerUtils.GetJSONField(jsonBody, "messages")
+	if !messagesResult.Exists() || !messagesResult.IsArray() {
+		return jsonBody, nil
+	}
+	var err error
+	for mi, msg := range messagesResult.Array() {
+		contentResult := msg.Get("content")
+		if !contentResult.Exists() || !contentResult.IsArray() {
+			continue
+		}
+		var toStrip []int
+		for ci, block := range contentResult.Array() {
+			if block.Get("type").String() == "thinking" && block.Get("thinking").String() == "" {
+				toStrip = append(toStrip, ci)
+			}
+		}
+		for i := len(toStrip) - 1; i >= 0; i-- {
+			path := fmt.Sprintf("messages.%d.content.%d", mi, toStrip[i])
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, path)
+			if err != nil {
+				return nil, fmt.Errorf("failed to strip empty thinking block at %s: %w", path, err)
+			}
+
+		}
+	}
+	return jsonBody, nil
+}
+
 // StripAutoInjectableTools removes code_execution tools from the raw JSON body's tools array
 // when web_search or web_fetch tools are also present. The Anthropic API auto-injects
 // code_execution when web_search_20260209 or web_fetch_20260209 is included in the request,
@@ -1089,16 +1228,16 @@ func StripAutoInjectableTools(jsonBody []byte) ([]byte, error) {
 
 	// Check if web_search or web_fetch is present — only then does Anthropic
 	// auto-inject code_execution, causing a conflict if it's also explicit.
-	hasWebSearchOrFetch := false
+	hasWebSearchOrFetchWithAutoInjectableCodeExecution := false
 	for _, tool := range tools {
 		toolType := tool.Get("type").String()
 		if strings.HasPrefix(toolType, "web_search_") || strings.HasPrefix(toolType, "web_fetch_") {
-			hasWebSearchOrFetch = true
+			hasWebSearchOrFetchWithAutoInjectableCodeExecution = doesWebSearchOrFetchAutoInjectCodeExecution(toolType)
 			break
 		}
 	}
 
-	if !hasWebSearchOrFetch {
+	if !hasWebSearchOrFetchWithAutoInjectableCodeExecution {
 		return jsonBody, nil
 	}
 
@@ -1134,12 +1273,28 @@ func StripAutoInjectableTools(jsonBody []byte) ([]byte, error) {
 }
 
 // RemapRawToolVersionsForProvider inspects tools in a raw JSON body and remaps
-// unsupported tool versions to supported ones for the target provider.
-// Returns an error if a tool type is fundamentally unsupported (no remap possible).
-func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProvider) ([]byte, error) {
+// unsupported tool versions to supported ones for the target provider, and
+// normalizes computer-use / text-editor / bash tool {type, name} pairs to match
+// the model's required generation. Returns an error if a tool type is
+// fundamentally unsupported (no remap possible).
+//
+// model is the request's "model" field; it drives ComputerUseGeneration so that
+// (e.g.) a request pairing claude-sonnet-4-6 with text_editor_20250124 gets
+// rewritten to text_editor_20250728 + str_replace_based_edit_tool before
+// hitting Anthropic's strict Pydantic validator.
+func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProvider, model string) ([]byte, error) {
 	toolsResult := providerUtils.GetJSONField(jsonBody, "tools")
 	if !toolsResult.Exists() || !toolsResult.IsArray() {
 		return jsonBody, nil
+	}
+
+	// Fall back to body-embedded model when caller didn't pass one. Mirrors
+	// the same fallback in StripUnsupportedFieldsFromRawBody so both helpers
+	// pick the same generation when invoked without an explicit model.
+	if model == "" {
+		if modelResult := providerUtils.GetJSONField(jsonBody, "model"); modelResult.Exists() {
+			model = modelResult.String()
+		}
 	}
 
 	var err error
@@ -1157,12 +1312,51 @@ func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProv
 		}
 	}
 
-	// Apply version remaps
+	// Normalize computer-use / text-editor / bash tools to the canonical
+	// (type, name) pair for the model's generation. Runs before
+	// providerToolVersionRemaps so downgrades still work for non-Anthropic
+	// providers that share the schema.
+	computerGeneration := ComputerUseGeneration(model)
+	textEditorGeneration := TextEditorGeneration(model)
+	for i, tool := range tools {
+		toolType := tool.Get("type").String()
+		baseTool := computerUseBaseTool(toolType)
+		if baseTool == "" {
+			continue
+		}
+		generation := computerGeneration
+		if baseTool == "text_editor" {
+			generation = textEditorGeneration
+		}
+		wantType, wantName := NormalizedToolSpec(generation, baseTool)
+		if wantType == "" {
+			continue
+		}
+		if toolType != wantType {
+			path := fmt.Sprintf("tools.%d.type", i)
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, path, wantType)
+			if err != nil {
+				return nil, fmt.Errorf("failed to normalize tool type: %w", err)
+			}
+		}
+		// Only set name if the tool has one (custom tools use input_schema; computer-use family always has a name).
+		if existingName := tool.Get("name").String(); existingName != "" && existingName != wantName {
+			path := fmt.Sprintf("tools.%d.name", i)
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, path, wantName)
+			if err != nil {
+				return nil, fmt.Errorf("failed to normalize tool name: %w", err)
+			}
+		}
+	}
+
+	// Apply provider-specific version remaps (e.g. web_search downgrades for non-Anthropic providers)
 	remaps, ok := providerToolVersionRemaps[provider]
 	if !ok {
 		return jsonBody, nil
 	}
 
+	// Re-fetch tools array since paths may have changed via SetJSONField above
+	tools = providerUtils.GetJSONField(jsonBody, "tools").Array()
 	for i, tool := range tools {
 		toolType := tool.Get("type").String()
 		for _, remap := range remaps {
@@ -1203,11 +1397,11 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and
 // per-request context headers, deduplicating them.
-func MergeBetaHeaders(providerExtraHeaders map[string]string, ctx context.Context) []string {
+func MergeBetaHeaders(ctx context.Context, providerExtraHeaders map[string]string) []string {
 	seen := make(map[string]bool)
 	var all []string
 	add := func(v string) {
-		for _, part := range strings.Split(v, ",") {
+		for part := range strings.SplitSeq(v, ",") {
 			if t := strings.TrimSpace(part); t != "" && !seen[t] {
 				seen[t] = true
 				all = append(all, t)
@@ -1250,8 +1444,7 @@ func FilterBetaHeadersForProvider(headers []string, provider schemas.ModelProvid
 
 	filtered := make([]string, 0, len(headers))
 	for _, h := range headers {
-		tokens := strings.Split(h, ",")
-		for _, token := range tokens {
+		for token := range strings.SplitSeq(h, ",") {
 			token = strings.TrimSpace(token)
 
 			if token == "" {
@@ -1317,10 +1510,8 @@ func FilterBetaHeadersForProvider(headers []string, provider schemas.ModelProvid
 
 // appendUniqueHeader adds a header to the slice if not already present
 func appendUniqueHeader(slice []string, item string) []string {
-	for _, s := range slice {
-		if s == item {
-			return slice
-		}
+	if slices.Contains(slice, item) {
+		return slice
 	}
 	return append(slice, item)
 }
@@ -1666,6 +1857,60 @@ func convertMapToToolFunctionParameters(m map[string]interface{}) *schemas.ToolF
 }
 
 // ConvertAnthropicFinishReasonToBifrost converts provider finish reasons to Bifrost format
+// MapAnthropicRequestServiceTierToBifrost maps Anthropic request service_tier values back to Bifrost/OpenAI values.
+// Anthropic request values: "auto" or "standard_only".
+func MapAnthropicRequestServiceTierToBifrost(tier string) schemas.BifrostServiceTier {
+	switch tier {
+	case "standard_only":
+		return schemas.BifrostServiceTierDefault
+	case "auto":
+		return schemas.BifrostServiceTierAuto
+	default:
+		return schemas.BifrostServiceTierAuto
+	}
+}
+
+// MapBifrostServiceTierToAnthropicRequest maps OpenAI-compatible service_tier request values to Anthropic's two allowed values.
+// Anthropic only supports "auto" (use priority if available) or "standard_only" (always standard).
+func MapBifrostServiceTierToAnthropicRequest(tier schemas.BifrostServiceTier) string {
+	switch tier {
+	case schemas.BifrostServiceTierAuto, schemas.BifrostServiceTierPriority:
+		return "auto"
+	case schemas.BifrostServiceTierDefault, schemas.BifrostServiceTierFlex:
+		return "standard_only"
+	default:
+		return "auto"
+	}
+}
+
+// MapAnthropicServiceTierToBifrost maps Anthropic response service_tier values to OpenAI-compatible Bifrost values.
+// Anthropic response values: "standard", "priority", "batch".
+func MapAnthropicServiceTierToBifrost(tier string) schemas.BifrostServiceTier {
+	switch tier {
+	case "standard":
+		return schemas.BifrostServiceTierDefault
+	case "priority":
+		return schemas.BifrostServiceTierPriority
+	default:
+		return schemas.BifrostServiceTier(tier)
+	}
+}
+
+// MapBifrostServiceTierToAnthropicResponse maps Bifrost/OpenAI response service_tier values back to Anthropic wire format.
+// Used when re-encoding a Bifrost response into Anthropic format.
+func MapBifrostServiceTierToAnthropicResponse(tier schemas.BifrostServiceTier) string {
+	switch tier {
+	case schemas.BifrostServiceTierDefault:
+		return "standard"
+	case schemas.BifrostServiceTierPriority:
+		return "priority"
+	case schemas.BifrostServiceTierAuto, schemas.BifrostServiceTierFlex:
+		return "standard"
+	default:
+		return string(tier)
+	}
+}
+
 func ConvertAnthropicFinishReasonToBifrost(providerReason AnthropicStopReason) string {
 	if bifrostReason, ok := anthropicFinishReasonToBifrost[providerReason]; ok {
 		return bifrostReason
@@ -1775,6 +2020,7 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 		// Check if it's plain text based on file type
 		if file.FileType != nil && (*file.FileType == "text/plain" || *file.FileType == "txt") {
 			documentBlock.Source.SourceObj.Type = "text"
+			documentBlock.Source.SourceObj.MediaType = schemas.Ptr("text/plain")
 			documentBlock.Source.SourceObj.Data = &fileData
 			return documentBlock
 		}
@@ -2015,6 +2261,177 @@ func filterEnumValuesByType(enumValues []interface{}, schemaType string) []inter
 	}
 
 	return filtered
+}
+
+// NormalizeSchemaForAnthropic is the exported entry point for normalizeSchemaForAnthropic,
+// used by providers (e.g. Bedrock) that share Anthropic's schema validation rules.
+func NormalizeSchemaForAnthropic(schema map[string]interface{}) map[string]interface{} {
+	return normalizeSchemaForAnthropic(schema)
+}
+
+// sjsonEscapeKey escapes characters that have special meaning in sjson path
+// syntax. Necessary for property names that include such characters; for the
+// common JSON Schema case (alphanumeric + underscore + $ + -) this is a no-op.
+func sjsonEscapeKey(k string) string {
+	if !strings.ContainsAny(k, `.*?#\`) {
+		return k
+	}
+	var b strings.Builder
+	b.Grow(len(k) + 2)
+	for _, r := range k {
+		switch r {
+		case '.', '*', '?', '#', '\\':
+			b.WriteRune('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// filterEnumValuesByTypeRaw is the gjson equivalent of filterEnumValuesByType.
+// Object/array enum values pass through to all branches (matches the map
+// version's default-case behavior).
+func filterEnumValuesByTypeRaw(values []gjson.Result, schemaType string) []gjson.Result {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]gjson.Result, 0, len(values))
+	for _, v := range values {
+		var actual string
+		switch v.Type {
+		case gjson.String:
+			actual = "string"
+		case gjson.Number:
+			f := v.Float()
+			if f == float64(int64(f)) {
+				actual = "integer"
+			} else {
+				actual = "number"
+			}
+		case gjson.True, gjson.False:
+			actual = "boolean"
+		case gjson.Null:
+			actual = "null"
+		case gjson.JSON:
+			out = append(out, v)
+			continue
+		default:
+			continue
+		}
+		if actual == schemaType || (schemaType == "number" && actual == "integer") {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// NormalizeSchemaForAnthropicRaw is the json.RawMessage equivalent of
+// NormalizeSchemaForAnthropic. Operates on raw JSON bytes throughout via
+// sjson/gjson; produces functionally identical output to the map-based
+// version. Use this when the caller already has the schema as raw bytes
+// and wants to avoid a map round-trip.
+func NormalizeSchemaForAnthropicRaw(schema json.RawMessage) json.RawMessage {
+	if len(schema) == 0 {
+		return schema
+	}
+	if !gjson.ParseBytes(schema).IsObject() {
+		return schema
+	}
+
+	body := append([]byte(nil), schema...)
+
+	if typeVal := gjson.GetBytes(body, "type"); typeVal.IsArray() {
+		var types []string
+		for _, t := range typeVal.Array() {
+			types = append(types, t.String())
+		}
+		nonNullTypes := make([]string, 0, len(types))
+		for _, t := range types {
+			if t != "null" {
+				nonNullTypes = append(nonNullTypes, t)
+			}
+		}
+
+		switch {
+		case len(nonNullTypes) == 0:
+			body, _ = sjson.SetBytes(body, "type", "null")
+		case len(nonNullTypes) == 1 && len(types) == 1:
+			body, _ = sjson.SetBytes(body, "type", nonNullTypes[0])
+		default:
+			body, _ = sjson.DeleteBytes(body, "type")
+
+			enumVal := gjson.GetBytes(body, "enum")
+			hasEnum := enumVal.Exists() && enumVal.IsArray()
+			var enumArr []gjson.Result
+			if hasEnum {
+				enumArr = enumVal.Array()
+			}
+
+			anyOf := []byte("[]")
+			i := 0
+			for _, t := range nonNullTypes {
+				branch := []byte(`{}`)
+				branch, _ = sjson.SetBytes(branch, "type", t)
+				if hasEnum {
+					filtered := filterEnumValuesByTypeRaw(enumArr, t)
+					if len(filtered) > 0 {
+						enumOut := []byte("[]")
+						for j, v := range filtered {
+							enumOut, _ = sjson.SetRawBytes(enumOut, fmt.Sprintf("%d", j), []byte(v.Raw))
+						}
+						branch, _ = sjson.SetRawBytes(branch, "enum", enumOut)
+					}
+				}
+				anyOf, _ = sjson.SetRawBytes(anyOf, fmt.Sprintf("%d", i), branch)
+				i++
+			}
+			if len(nonNullTypes) < len(types) {
+				nullBranch, _ := sjson.SetBytes([]byte(`{}`), "type", "null")
+				anyOf, _ = sjson.SetRawBytes(anyOf, fmt.Sprintf("%d", i), nullBranch)
+			}
+			body, _ = sjson.SetRawBytes(body, "anyOf", anyOf)
+			body, _ = sjson.DeleteBytes(body, "enum")
+		}
+	}
+
+	for _, key := range []string{"properties", "definitions", "$defs"} {
+		val := gjson.GetBytes(body, key)
+		if !val.IsObject() {
+			continue
+		}
+		newObj := []byte("{}")
+		val.ForEach(func(k, v gjson.Result) bool {
+			child := []byte(v.Raw)
+			if v.IsObject() {
+				child = NormalizeSchemaForAnthropicRaw(child)
+			}
+			newObj, _ = sjson.SetRawBytes(newObj, sjsonEscapeKey(k.String()), child)
+			return true
+		})
+		body, _ = sjson.SetRawBytes(body, sjsonEscapeKey(key), newObj)
+	}
+
+	if items := gjson.GetBytes(body, "items"); items.IsObject() {
+		body, _ = sjson.SetRawBytes(body, "items", NormalizeSchemaForAnthropicRaw([]byte(items.Raw)))
+	}
+
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		arr := gjson.GetBytes(body, key)
+		if !arr.IsArray() {
+			continue
+		}
+		newArr := []byte("[]")
+		for i, item := range arr.Array() {
+			child := []byte(item.Raw)
+			if item.IsObject() {
+				child = NormalizeSchemaForAnthropicRaw(child)
+			}
+			newArr, _ = sjson.SetRawBytes(newArr, fmt.Sprintf("%d", i), child)
+		}
+		body, _ = sjson.SetRawBytes(body, key, newArr)
+	}
+
+	return body
 }
 
 // normalizeSchemaForAnthropic recursively normalizes a JSON schema to be compatible with Anthropic's API.
@@ -2300,6 +2717,14 @@ func convertResponsesTextConfigToAnthropicOutputFormat(textConfig *schemas.Respo
 
 		if len(format.JSONSchema.Required) > 0 {
 			schema["required"] = format.JSONSchema.Required
+		}
+
+		if format.JSONSchema.Defs != nil {
+			schema["$defs"] = *format.JSONSchema.Defs
+		}
+
+		if format.JSONSchema.Definitions != nil {
+			schema["definitions"] = *format.JSONSchema.Definitions
 		}
 
 		if format.JSONSchema.Type != nil && *format.JSONSchema.Type == "object" {

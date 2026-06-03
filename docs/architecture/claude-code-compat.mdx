@@ -1,0 +1,129 @@
+# Bifrost + Claude Code — Architecture
+
+This document describes the architecture of using Bifrost as a drop-in backend for [Claude Code](https://claude.ai/code), as implemented in the [`claude-code-compat`](../../tree/claude-code-compat) branch.
+
+## Overview
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                       Claude Code                            │
+│                    (CLI / VS Code Ext)                       │
+│                                                              │
+│  ANTHROPIC_BASE_URL = http://localhost:8787/anthropic       │
+│  ANTHROPIC_API_KEY  = sk-ant-<fake key>                     │
+└────────────────────────┬─────────────────────────────────────┘
+                         │
+                         │  POST /anthropic/v1/messages
+                         │  Authorization: Bearer sk-ant-*
+                         │
+                         ▼
+┌──────────────────────────────────────────────────────────────┐
+│                      Bifrost Gateway                         │
+│                    http://localhost:8787                      │
+│                                                              │
+│  ┌──────────┐   ┌────────────┐   ┌──────────────────────┐   │
+│  │ VK       │   │ Routing    │   │ Provider Adapters    │   │
+│  │ Matcher  │──▶│ (model ID  │──▶│                      │   │
+│  │          │   │  prefix)   │   │ Parasail    Gemini   │   │
+│  │ claude-  │   │            │   │ DeepInfra   Nebius   │   │
+│  │ jr (fake)│   │ parasail/  │   │ Novita      Vertex   │   │
+│  │          │   │   → Para   │   │ Moonshot    Anthropic│   │
+│  │ claude-  │   │ Deepinfra/ │   └──────────────────────┘   │
+│  │ jr-pas-  │   │   → DI     │                              │
+│  │ through  │   │ Novita/    │   ┌──────────────────────┐   │
+│  │ (real)   │   │   → Novita │   │ MCP Server Proxy     │   │
+│  └──────────┘   │ gemini/    │   │                      │   │
+│                  │   → Gemini │   │ Third-party MCP      │   │
+│                  │...         │   │ servers are proxied  │   │
+│                  └────────────┘   │ and exposed as tools │   │
+│                                   └──────────────────────┘   │
+└──────────────────────────────────────────────────────────────┘
+           │                    │                     │
+           ▼                    ▼                     ▼
+┌──────────────┐     ┌──────────────────┐     ┌──────────────┐
+│   Parasail   │     │ DeepInfra        │     │ Google       │
+│   (private)  │     │ Nebius           │     │  Gemini      │
+│              │     │ Novita           │     │  Vertex AI   │
+│              │     │ Moonshot         │     │  Anthropic   │
+└──────────────┘     └──────────────────┘     └──────────────┘
+```
+
+## Key Pattern: Virtual Key Authentication
+
+Claude Code's SDK validates that `ANTHROPIC_API_KEY` starts with `sk-ant-` _before_ any request is sent. Bifrost's native keys use `sk-bf-`, which are rejected client-side. The workaround is a virtual key whose value is a valid-looking `sk-ant-` string:
+
+```
+┌──────────────────────┐     ┌────────────────────────┐
+│ Claude Code          │     │ Bifrost                │
+│                      │     │                        │
+│ ANTHROPIC_API_KEY =  │────▶│ Virtual Key: claude-jr │
+│ sk-ant-<fake>        │     │  matches sk-ant-<fake> │
+│                      │     │  model_override: set   │
+│ claude.json          │────▶│ Virtual Key: claude-   │
+│ primaryApiKey =      │     │  jr-passthrough        │
+│ sk-ant-<real>        │     │  matches sk-ant-<real> │
+└──────────────────────┘     └────────────────────────┘
+```
+
+The dual-key pattern exists because the VS Code extension has **two separate auth paths**:
+1. **CLI subprocess** — reads `ANTHROPIC_API_KEY` from `env` block in `settings.json`
+2. **Extension host AuthManager** — reads `primaryApiKey` from `claude.json`
+
+Both keys map to the same Bifrost virtual key behaviour (identical routing and model override).
+
+## Provider Routing
+
+Routing is by model ID prefix — the first path segment determines the provider:
+
+```
+Model ID                           → Provider
+─────────────────────────────────────────────────────
+parasail/google/gemma-4-26B-A4B-it → Parasail
+Deepinfra/deepseek-ai/DeepSeek-V4  → DeepInfra
+Novita/deepseek/deepseek-v4-flash  → Novita
+gemini/gemini-3-flash-preview      → Google Gemini
+vertex/zai-org/glm-5-maas          → Vertex AI MaaS
+nebius/deepseek-ai/DeepSeek-V3.2   → Nebius
+Moonshot/kimi-k2.6                 → Moonshot
+```
+
+Prefixes are case-sensitive (`Novita/` ≠ `novita/`). Each provider uses its own model ID namespace, and Bifrost passes the full ID through to the upstream.
+
+## MCP Server Proxy
+
+Bifrost can proxy external MCP servers over SSE, making their tools available to Claude Code through a single Bifrost connection:
+
+```
+┌────────────┐     ┌──────────┐     ┌──────────────┐
+│ Claude Code│     │ Bifrost │     │ MCP Server   │
+│            │     │          │     │              │
+│ tools/call │────▶│ Proxy    │────▶│ tool_do()    │
+│            │     │          │     │              │
+│ response   │◀────│ Proxy    │◀────│ result       │
+└────────────┘     └──────────┘     └──────────────┘
+```
+
+The proxy registers servers in Bifrost's configuration by transport type and URL. On each MCP tools/list call, Bifrost aggregates tools from all registered servers and prefixes them with the server name (e.g. `mori_advisor-memory_list`). Requests are routed back to the originating server by matching the prefix.
+
+This avoids per-client MCP server configuration — any client connected to Bifrost automatically gets all proxied tools.
+
+## Profile Isolation
+
+Multiple Claude Code configurations coexist via `CLAUDE_CONFIG_DIR` and environment variable switching:
+
+```
+~/.claude-profiles/
+├── claude-api/    → Direct Anthropic API (real sk-ant- key)
+├── claude-sub/    → Claude Pro / OAuth subscription
+├── claude-jr/     → Bifrost gateway (fake key, BASE_URL set)
+└── claude-sr/     → Remote SSH (same Bifrost pattern)
+```
+
+A switcher script copies the active profile's files into `~/.claude/` and updates VS Code profile environment variables, so Claude Code always runs against the correct backend regardless of launch method.
+
+## Known Gotchas
+
+- **Model name validation**: CC's SDK rejects non-`claude-*` model IDs. Workaround: set `ANTHROPIC_CUSTOM_MODEL_OPTION` (for single-model setups) or configure Bifrost VK `model_override` to return a valid `claude-*` name in the response.
+- **Content block compatibility**: Anthropic-specific content types (e.g. `redacted_thinking`) may be returned by non-Anthropic providers. Bifrost's adapter layer should normalise these where possible.
+- **Haiku session title generation**: CC hardcodes `claude-haiku-4-5-20251001` for auto-generated conversation titles. VK `model_override` intercepts and reroutes these requests to the active provider.
+- **Plan/Act model pairing**: CC supports different models for planning and acting. Compound model ID strings in `ANTHROPIC_CUSTOM_MODEL_OPTION` are rejected by CC's validator — each invocation uses a single model ID, switched via the profile switcher or model picker.

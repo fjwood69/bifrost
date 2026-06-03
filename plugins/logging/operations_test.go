@@ -2,6 +2,7 @@ package logging
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -40,6 +41,199 @@ func newTestStore(t *testing.T) logstore.LogStore {
 	return store
 }
 
+// TestMCPHooksDeferDBWriteUntilPostHookBatch verifies MCP logs are kept in
+// memory after PreMCPHook and persisted by the batch writer after PostMCPHook.
+func TestMCPHooksDeferDBWriteUntilPostHookBatch(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-mcp-batch")
+	ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-batch-flow")
+	ctx.SetValue(schemas.BifrostContextKeyUserID, "user-1")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, "team-1")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, "customer-1")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceBusinessUnitID, "bu-1")
+
+	toolName := "docs-search"
+	_, _, err = plugin.PreMCPHook(ctx, &schemas.BifrostMCPRequest{
+		RequestType: schemas.MCPRequestTypeChatToolCall,
+		ChatAssistantMessageToolCall: &schemas.ChatAssistantMessageToolCall{
+			Function: schemas.ChatAssistantMessageToolCallFunction{
+				Name:      &toolName,
+				Arguments: `{"query":"find this"}`,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PreMCPHook() error = %v", err)
+	}
+
+	if _, err := store.FindMCPToolLog(context.Background(), "mcp-batch-flow"); !errors.Is(err, logstore.ErrNotFound) {
+		t.Fatalf("expected MCP log to stay in memory before PostMCPHook, got err=%v", err)
+	}
+
+	result := `{"answer":"done"}`
+	_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+		ChatMessage: &schemas.ChatMessage{
+			Role:    schemas.ChatMessageRoleTool,
+			Content: &schemas.ChatMessageContent{ContentStr: &result},
+		},
+		ExtraFields: schemas.BifrostMCPResponseExtraFields{
+			MCPRequestType: schemas.MCPRequestTypeChatToolCall,
+			ClientName:     "docs",
+			ToolName:       "search",
+			Latency:        42,
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("PostMCPHook() error = %v", err)
+	}
+
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	logEntry, err := store.FindMCPToolLog(context.Background(), "mcp-batch-flow")
+	if err != nil {
+		t.Fatalf("FindMCPToolLog() error = %v", err)
+	}
+	if logEntry.Status != "success" {
+		t.Fatalf("expected status success, got %q", logEntry.Status)
+	}
+	if logEntry.ArgumentsParsed == nil {
+		t.Fatalf("expected arguments to be persisted")
+	}
+	resultMap, ok := logEntry.ResultParsed.(map[string]interface{})
+	if !ok || resultMap["answer"] != "done" {
+		t.Fatalf("expected parsed result to be persisted, got %#v", logEntry.ResultParsed)
+	}
+	if logEntry.Latency == nil || *logEntry.Latency != 42 {
+		t.Fatalf("expected latency 42, got %#v", logEntry.Latency)
+	}
+	assertMCPLogGovernanceFields(t, logEntry, "user-1", "team-1", "customer-1", "bu-1")
+}
+
+// TestPostMCPHookFallbackStampsGovernanceFields verifies fallback MCP logs
+// created without a pending pre-hook entry still carry DAC ownership fields.
+func TestPostMCPHookFallbackStampsGovernanceFields(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-mcp-fallback")
+	ctx.SetValue(schemas.BifrostContextKeyMCPLogID, "mcp-fallback-flow")
+	ctx.SetValue(schemas.BifrostContextKeyUserID, "user-fallback")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, "team-fallback")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, "customer-fallback")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceBusinessUnitID, "bu-fallback")
+
+	result := `{"answer":"fallback"}`
+	_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
+		ChatMessage: &schemas.ChatMessage{
+			Role:    schemas.ChatMessageRoleTool,
+			Content: &schemas.ChatMessageContent{ContentStr: &result},
+		},
+		ExtraFields: schemas.BifrostMCPResponseExtraFields{
+			MCPRequestType: schemas.MCPRequestTypeChatToolCall,
+			ClientName:     "docs",
+			ToolName:       "search",
+			Latency:        7,
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("PostMCPHook() error = %v", err)
+	}
+
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	logEntry, err := store.FindMCPToolLog(context.Background(), "mcp-fallback-flow")
+	if err != nil {
+		t.Fatalf("FindMCPToolLog() error = %v", err)
+	}
+	assertMCPLogGovernanceFields(t, logEntry, "user-fallback", "team-fallback", "customer-fallback", "bu-fallback")
+}
+
+// TestCleanupStalePendingMCPLogsPersistsErrorFallback verifies stale pending
+// MCP logs are committed as terminal errors instead of being silently dropped.
+func TestCleanupStalePendingMCPLogsPersistsErrorFallback(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	staleCreatedAt := time.Now().Add(-pendingLogTTL - time.Minute)
+	plugin.pendingMCPLogsToInject.Store("mcp-stale", &logstore.MCPToolLog{
+		ID:          "mcp-stale",
+		RequestID:   "req-stale",
+		Timestamp:   staleCreatedAt,
+		ToolName:    "search",
+		ServerLabel: "docs",
+		Status:      "processing",
+		CreatedAt:   staleCreatedAt,
+		ArgumentsParsed: map[string]interface{}{
+			"query": "stale input",
+		},
+	})
+
+	plugin.cleanupStalePendingLogs()
+
+	if _, ok := plugin.pendingMCPLogsToInject.Load("mcp-stale"); ok {
+		t.Fatal("expected stale MCP pending log to be removed from memory")
+	}
+	if _, err := store.FindMCPToolLog(context.Background(), "mcp-stale"); !errors.Is(err, logstore.ErrNotFound) {
+		t.Fatalf("expected stale MCP log to be queued before batch flush, got err=%v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	logEntry, err := store.FindMCPToolLog(context.Background(), "mcp-stale")
+	if err != nil {
+		t.Fatalf("FindMCPToolLog() error = %v", err)
+	}
+	if logEntry.Status != "error" {
+		t.Fatalf("expected status error, got %q", logEntry.Status)
+	}
+	if logEntry.ArgumentsParsed == nil {
+		t.Fatal("expected stale MCP input arguments to be persisted")
+	}
+	if logEntry.ResultParsed != nil || logEntry.Result != "" {
+		t.Fatalf("expected stale MCP log to have no result, got parsed=%#v raw=%q", logEntry.ResultParsed, logEntry.Result)
+	}
+	if logEntry.ErrorDetailsParsed == nil || logEntry.ErrorDetailsParsed.Error == nil {
+		t.Fatalf("expected stale MCP error details, got %#v", logEntry.ErrorDetailsParsed)
+	}
+	if !strings.Contains(logEntry.ErrorDetailsParsed.Error.Message, "pending log TTL") {
+		t.Fatalf("expected stale MCP timeout message, got %q", logEntry.ErrorDetailsParsed.Error.Message)
+	}
+}
+
+func assertMCPLogGovernanceFields(t *testing.T, logEntry *logstore.MCPToolLog, userID, teamID, customerID, businessUnitID string) {
+	t.Helper()
+	if logEntry.UserID == nil || *logEntry.UserID != userID {
+		t.Fatalf("expected user_id %q, got %#v", userID, logEntry.UserID)
+	}
+	if logEntry.TeamID == nil || *logEntry.TeamID != teamID {
+		t.Fatalf("expected team_id %q, got %#v", teamID, logEntry.TeamID)
+	}
+	if logEntry.CustomerID == nil || *logEntry.CustomerID != customerID {
+		t.Fatalf("expected customer_id %q, got %#v", customerID, logEntry.CustomerID)
+	}
+	if logEntry.BusinessUnitID == nil || *logEntry.BusinessUnitID != businessUnitID {
+		t.Fatalf("expected business_unit_id %q, got %#v", businessUnitID, logEntry.BusinessUnitID)
+	}
+}
+
 func TestUpdateLogEntryPreservesResponsesInputContentSummary(t *testing.T) {
 	store := newTestStore(t)
 	plugin := &LoggerPlugin{
@@ -75,7 +269,7 @@ func TestUpdateLogEntryPreservesResponsesInputContentSummary(t *testing.T) {
 		}},
 	}
 
-	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update); err != nil {
+	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update, true); err != nil {
 		t.Fatalf("updateLogEntry() error = %v", err)
 	}
 
@@ -121,7 +315,7 @@ func TestUpdateLogEntryUpdatesContentSummaryForChatOutput(t *testing.T) {
 		},
 	}
 
-	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update); err != nil {
+	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update, true); err != nil {
 		t.Fatalf("updateLogEntry() error = %v", err)
 	}
 
@@ -136,11 +330,9 @@ func TestUpdateLogEntryUpdatesContentSummaryForChatOutput(t *testing.T) {
 
 func TestUpdateLogEntrySuppressesChatOutputWhenContentLoggingDisabled(t *testing.T) {
 	store := newTestStore(t)
-	disableContentLogging := true
 	plugin := &LoggerPlugin{
-		store:                 store,
-		logger:                testLogger{},
-		disableContentLogging: &disableContentLogging,
+		store:  store,
+		logger: testLogger{},
 	}
 
 	requestID := "req-chat-disabled"
@@ -166,7 +358,7 @@ func TestUpdateLogEntrySuppressesChatOutputWhenContentLoggingDisabled(t *testing
 		},
 	}
 
-	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update); err != nil {
+	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update, false); err != nil {
 		t.Fatalf("updateLogEntry() error = %v", err)
 	}
 
@@ -250,6 +442,24 @@ func TestStoreOrEnqueueRetryPreservesAllEntries(t *testing.T) {
 	}
 }
 
+func TestConvertToProcessedStreamResponseUsesResponsesStreamTypeForWebSocketResponses(t *testing.T) {
+	result := &schemas.StreamAccumulatorResult{
+		RequestID:      "req-ws-3000",
+		RequestedModel: "gpt-4o-mini",
+		ResolvedModel:  "gpt-4o-mini",
+		Provider:       schemas.OpenAI,
+		Status:         "success",
+	}
+
+	processed := convertToProcessedStreamResponse(result, schemas.WebSocketResponsesRequest)
+	if processed == nil {
+		t.Fatal("expected processed stream response, got nil")
+	}
+	if processed.StreamType != "responses" {
+		t.Fatalf("expected stream type responses, got %s", processed.StreamType)
+	}
+}
+
 func TestApplyRealtimeOutputToEntryBackfillsUserTranscriptFromRawRequest(t *testing.T) {
 	plugin := &LoggerPlugin{}
 	entry := &logstore.Log{}
@@ -274,7 +484,7 @@ func TestApplyRealtimeOutputToEntryBackfillsUserTranscriptFromRawRequest(t *test
 		},
 	}
 
-	plugin.applyRealtimeOutputToEntry(entry, result, true)
+	plugin.applyRealtimeOutputToEntry(entry, result, true, true)
 	if err := entry.SerializeFields(); err != nil {
 		t.Fatalf("SerializeFields() error = %v", err)
 	}
@@ -323,7 +533,7 @@ func TestApplyRealtimeOutputToEntryBackfillsMissingTranscriptPlaceholder(t *test
 		},
 	}
 
-	plugin.applyRealtimeOutputToEntry(entry, result, true)
+	plugin.applyRealtimeOutputToEntry(entry, result, true, true)
 	if err := entry.SerializeFields(); err != nil {
 		t.Fatalf("SerializeFields() error = %v", err)
 	}
@@ -363,7 +573,7 @@ func TestApplyRealtimeOutputToEntryBackfillsDoneMissingTranscriptPlaceholder(t *
 		},
 	}
 
-	plugin.applyRealtimeOutputToEntry(entry, result, true)
+	plugin.applyRealtimeOutputToEntry(entry, result, true, true)
 	if err := entry.SerializeFields(); err != nil {
 		t.Fatalf("SerializeFields() error = %v", err)
 	}
@@ -403,7 +613,7 @@ func TestApplyRealtimeOutputToEntryBackfillsRetrievedUserAndToolHistory(t *testi
 		},
 	}
 
-	plugin.applyRealtimeOutputToEntry(entry, result, true)
+	plugin.applyRealtimeOutputToEntry(entry, result, true, true)
 	if err := entry.SerializeFields(); err != nil {
 		t.Fatalf("SerializeFields() error = %v", err)
 	}
@@ -444,7 +654,7 @@ func TestApplyRealtimeOutputToEntryBackfillsCreatedUserAndToolHistory(t *testing
 		},
 	}
 
-	plugin.applyRealtimeOutputToEntry(entry, result, true)
+	plugin.applyRealtimeOutputToEntry(entry, result, true, true)
 
 	if len(entry.InputHistoryParsed) != 2 {
 		t.Fatalf("len(InputHistoryParsed) = %d, want 2", len(entry.InputHistoryParsed))
@@ -495,7 +705,7 @@ func TestApplyRealtimeOutputToEntryBackfillsAddedUserAndToolHistory(t *testing.T
 		},
 	}
 
-	plugin.applyRealtimeOutputToEntry(entry, result, true)
+	plugin.applyRealtimeOutputToEntry(entry, result, true, true)
 	if err := entry.SerializeFields(); err != nil {
 		t.Fatalf("SerializeFields() error = %v", err)
 	}
@@ -558,7 +768,7 @@ func TestApplyRealtimeOutputToEntryMergesRawTranscriptIntoStructuredRealtimeHist
 		},
 	}
 
-	plugin.applyRealtimeOutputToEntry(entry, result, true)
+	plugin.applyRealtimeOutputToEntry(entry, result, true, true)
 	if err := entry.SerializeFields(); err != nil {
 		t.Fatalf("SerializeFields() error = %v", err)
 	}
@@ -610,7 +820,7 @@ func TestApplyRealtimeOutputToEntryDoesNotPersistRawWhenShouldStoreRawFalse(t *t
 		},
 	}
 
-	plugin.applyRealtimeOutputToEntry(entry, result, false)
+	plugin.applyRealtimeOutputToEntry(entry, result, false, true)
 
 	if entry.RawRequest != "" {
 		t.Fatalf("expected RawRequest to remain empty when shouldStoreRaw=false, got %q", entry.RawRequest)
@@ -623,5 +833,204 @@ func TestApplyRealtimeOutputToEntryDoesNotPersistRawWhenShouldStoreRawFalse(t *t
 	}
 	if entry.InputHistoryParsed[0].Role != schemas.ChatMessageRoleUser {
 		t.Fatalf("InputHistoryParsed[0].Role = %q, want user", entry.InputHistoryParsed[0].Role)
+	}
+}
+
+// TestContentLoggingEnabledHelper verifies precedence: ctx override > global config > default-enabled.
+func TestContentLoggingEnabledHelper(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+
+	tests := []struct {
+		name          string
+		globalDisable *bool
+		ctxOverride   *bool // nil = don't set the key
+		want          bool
+	}{
+		{"no config no override → enabled", nil, nil, true},
+		{"global disable=false no override → enabled", boolPtr(false), nil, true},
+		{"global disable=true no override → disabled", boolPtr(true), nil, false},
+		{"ctx override=false global disable=true → enabled", boolPtr(true), boolPtr(false), true},
+		{"ctx override=true global disable=false → disabled", boolPtr(false), boolPtr(true), false},
+		{"ctx override=true nil global → disabled", nil, boolPtr(true), false},
+		{"ctx override=false nil global → enabled", nil, boolPtr(false), true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &LoggerPlugin{disableContentLogging: tc.globalDisable}
+
+			var ctx *schemas.BifrostContext
+			if tc.ctxOverride != nil {
+				ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyAllowPerRequestStorageOverride, true)
+				ctx.SetValue(schemas.BifrostContextKeyDisableContentLogging, *tc.ctxOverride)
+			}
+
+			got := p.contentLoggingEnabled(ctx)
+			if got != tc.want {
+				t.Errorf("contentLoggingEnabled() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestContentLoggingEnabledHelperNilCtx verifies nil context falls back to global config.
+func TestContentLoggingEnabledHelperNilCtx(t *testing.T) {
+	disabled := true
+	p := &LoggerPlugin{disableContentLogging: &disabled}
+	if p.contentLoggingEnabled(nil) {
+		t.Error("expected false with nil ctx and global disable=true")
+	}
+}
+
+// TestUpdateLogEntryPerRequestOverrideEnablesContent verifies that passing contentLoggingEnabled=true
+// to updateLogEntry stores output even when the plugin's global toggle is disabled.
+func TestUpdateLogEntryPerRequestOverrideEnablesContent(t *testing.T) {
+	store := newTestStore(t)
+	disabled := true
+	plugin := &LoggerPlugin{
+		store:                 store,
+		logger:                testLogger{},
+		disableContentLogging: &disabled, // global: off
+	}
+
+	requestID := "req-per-request-enable"
+	now := time.Now().UTC()
+	if err := plugin.insertInitialLogEntry(context.Background(), requestID, "", now, 0, nil, &InitialLogData{
+		Object:   "chat_completion",
+		Provider: "openai",
+		Model:    "gpt-4o-mini",
+	}); err != nil {
+		t.Fatalf("insertInitialLogEntry() error = %v", err)
+	}
+
+	chatText := "should be stored via per-request override"
+	update := &UpdateLogData{
+		Status: "success",
+		ChatOutput: &schemas.ChatMessage{
+			Role:    schemas.ChatMessageRoleAssistant,
+			Content: &schemas.ChatMessageContent{ContentStr: &chatText},
+		},
+	}
+
+	// Explicitly pass true — simulates the per-request ctx override enabling content logging
+	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update, true); err != nil {
+		t.Fatalf("updateLogEntry() error = %v", err)
+	}
+
+	logEntry, err := store.FindByID(context.Background(), requestID)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if logEntry.OutputMessage == "" {
+		t.Error("expected output_message to be stored when contentLoggingEnabled=true override is used")
+	}
+}
+
+// TestUpdateLogEntryPerRequestOverrideDisablesContent verifies that passing contentLoggingEnabled=false
+// suppresses output even when the plugin's global toggle is enabled.
+func TestUpdateLogEntryPerRequestOverrideDisablesContent(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{
+		store:  store,
+		logger: testLogger{},
+		// global: nil → content logging on by default
+	}
+
+	requestID := "req-per-request-disable"
+	now := time.Now().UTC()
+	if err := plugin.insertInitialLogEntry(context.Background(), requestID, "", now, 0, nil, &InitialLogData{
+		Object:   "chat_completion",
+		Provider: "openai",
+		Model:    "gpt-4o-mini",
+	}); err != nil {
+		t.Fatalf("insertInitialLogEntry() error = %v", err)
+	}
+
+	chatText := "should NOT be stored"
+	update := &UpdateLogData{
+		Status: "success",
+		ChatOutput: &schemas.ChatMessage{
+			Role:    schemas.ChatMessageRoleAssistant,
+			Content: &schemas.ChatMessageContent{ContentStr: &chatText},
+		},
+	}
+
+	// Explicitly pass false — simulates x-bf-disable-content-logging: true on this request
+	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update, false); err != nil {
+		t.Fatalf("updateLogEntry() error = %v", err)
+	}
+
+	logEntry, err := store.FindByID(context.Background(), requestID)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if logEntry.OutputMessage != "" {
+		t.Errorf("expected output_message to be suppressed, got %q", logEntry.OutputMessage)
+	}
+}
+
+// TestApplyNonStreamingOutputToEntryContentLoggingDisabled verifies that output fields are
+// suppressed when contentLoggingEnabled=false.
+func TestApplyNonStreamingOutputToEntryContentLoggingDisabled(t *testing.T) {
+	plugin := &LoggerPlugin{}
+	entry := &logstore.Log{}
+
+	chatText := "should not appear"
+	result := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+						Message: &schemas.ChatMessage{
+							Role:    schemas.ChatMessageRoleAssistant,
+							Content: &schemas.ChatMessageContent{ContentStr: &chatText},
+						},
+					},
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+			},
+		},
+	}
+
+	plugin.applyNonStreamingOutputToEntry(entry, result, false, false)
+
+	if entry.OutputMessageParsed != nil {
+		t.Error("expected OutputMessageParsed to be nil when contentLoggingEnabled=false")
+	}
+}
+
+// TestApplyNonStreamingOutputToEntryContentLoggingEnabled verifies that output fields are
+// stored when contentLoggingEnabled=true regardless of the global plugin config.
+func TestApplyNonStreamingOutputToEntryContentLoggingEnabled(t *testing.T) {
+	disabled := true
+	plugin := &LoggerPlugin{disableContentLogging: &disabled} // global off, but explicit true passed
+	entry := &logstore.Log{}
+
+	chatText := "should appear"
+	result := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+						Message: &schemas.ChatMessage{
+							Role:    schemas.ChatMessageRoleAssistant,
+							Content: &schemas.ChatMessageContent{ContentStr: &chatText},
+						},
+					},
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+			},
+		},
+	}
+
+	plugin.applyNonStreamingOutputToEntry(entry, result, false, true)
+
+	if entry.OutputMessageParsed == nil {
+		t.Error("expected OutputMessageParsed to be set when contentLoggingEnabled=true")
 	}
 }

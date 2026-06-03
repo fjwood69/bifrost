@@ -276,7 +276,7 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 				)}
 
 				{/* Form Actions */}
-				<div className="flex justify-end space-x-2 pb-6">
+				<div className="mb-6 flex justify-end space-x-2">
 					<Button
 						type="button"
 						variant="outline"
@@ -285,11 +285,7 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 					>
 						Remove configuration
 					</Button>
-					<Button
-						type="submit"
-						disabled={!form.formState.isDirty || !form.formState.isValid || !hasUpdateProviderAccess || isUpdating}
-						isLoading={isUpdating}
-					>
+					<Button type="submit" disabled={!form.formState.isDirty || !hasUpdateProviderAccess || isUpdating} isLoading={isUpdating}>
 						Save Governance Configuration
 					</Button>
 				</div>

@@ -23,7 +23,6 @@ export const isKnownProvider = (provider: string): provider is KnownProvider => 
 // AzureKeyConfig matching Go's schemas.AzureKeyConfig
 export interface AzureKeyConfig {
 	endpoint: EnvVar;
-	api_version?: EnvVar;
 	client_id?: EnvVar;
 	client_secret?: EnvVar;
 	tenant_id?: EnvVar;
@@ -32,7 +31,6 @@ export interface AzureKeyConfig {
 
 export const DefaultAzureKeyConfig: AzureKeyConfig = {
 	endpoint: { value: "", env_var: "", from_env: false },
-	api_version: { value: "2024-02-01", env_var: "", from_env: false },
 	client_id: { value: "", env_var: "", from_env: false },
 	client_secret: { value: "", env_var: "", from_env: false },
 	tenant_id: { value: "", env_var: "", from_env: false },
@@ -174,7 +172,7 @@ export interface NetworkConfig {
 	retry_backoff_initial: number; // Duration in milliseconds
 	retry_backoff_max: number; // Duration in milliseconds
 	insecure_skip_verify?: boolean;
-	ca_cert_pem?: string;
+	ca_cert_pem?: EnvVar;
 	stream_idle_timeout_in_seconds?: number;
 	max_conns_per_host?: number;
 	enforce_http2?: boolean;
@@ -193,10 +191,10 @@ export type ProxyType = "none" | "http" | "socks5" | "environment";
 // ProxyConfig matching Go's schemas.ProxyConfig
 export interface ProxyConfig {
 	type: ProxyType;
-	url?: string;
-	username?: string;
-	password?: string;
-	ca_cert_pem?: string;
+	url?: EnvVar;
+	username?: EnvVar;
+	password?: EnvVar;
+	ca_cert_pem?: EnvVar;
 }
 
 // Request types matching Go's schemas.RequestType
@@ -269,8 +267,8 @@ export interface AllowedRequests {
 	image_edit: boolean;
 	image_edit_stream: boolean;
 	image_variation: boolean;
-	ocr: boolean;
-	ocr_stream: boolean;
+	ocr?: boolean;
+	ocr_stream?: boolean;
 	count_tokens: boolean;
 	list_models: boolean;
 	rerank: boolean;
@@ -382,6 +380,7 @@ export interface FrameworkConfig {
 	id: number;
 	pricing_url: string;
 	pricing_sync_interval: number;
+	model_parameters_url: string;
 }
 
 // Auth config
@@ -446,6 +445,13 @@ export interface RestartRequiredConfig {
 }
 
 // Bifrost Config
+export type PluginSpanFilterMode = "include" | "exclude";
+
+export interface PluginSpanFilter {
+	mode: PluginSpanFilterMode;
+	plugins: string[];
+}
+
 export interface BifrostConfig {
 	client_config: CoreConfig;
 	framework_config: FrameworkConfig;
@@ -456,6 +462,7 @@ export interface BifrostConfig {
 	is_cache_connected: boolean;
 	is_logs_connected: boolean;
 	auth_token?: string;
+	metadata?: Record<string, unknown>;
 }
 
 export interface CompatConfig {
@@ -472,10 +479,11 @@ export interface CoreConfig {
 	prometheus_labels: string[];
 	enable_logging: boolean;
 	disable_content_logging: boolean;
+	allow_per_request_content_storage_override: boolean;
+	allow_per_request_raw_override: boolean;
 	disable_db_pings_in_health: boolean;
 	log_retention_days: number;
 	enforce_auth_on_inference: boolean;
-	allow_direct_keys: boolean;
 	allowed_origins: string[];
 	allowed_headers: string[];
 	max_request_body_size_mb: number;
@@ -485,6 +493,7 @@ export interface CoreConfig {
 	mcp_code_mode_binding_level?: string;
 	mcp_tool_sync_interval: number;
 	mcp_disable_auto_tool_inject: boolean;
+	mcp_enable_temp_token_auth: boolean;
 	async_job_result_ttl: number;
 	required_headers: string[];
 	logging_headers: string[];
@@ -492,6 +501,7 @@ export interface CoreConfig {
 	hide_deleted_virtual_keys_in_filters: boolean;
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
+	mcp_external_client_url?: EnvVar;
 }
 
 export const DefaultCoreConfig: CoreConfig = {
@@ -500,10 +510,11 @@ export const DefaultCoreConfig: CoreConfig = {
 	prometheus_labels: [],
 	enable_logging: true,
 	disable_content_logging: false,
+	allow_per_request_content_storage_override: false,
+	allow_per_request_raw_override: false,
 	disable_db_pings_in_health: false,
 	log_retention_days: 365,
 	enforce_auth_on_inference: false,
-	allow_direct_keys: false,
 	allowed_origins: [],
 	max_request_body_size_mb: 100,
 	compat: { convert_text_to_chat: false, convert_chat_to_responses: false, should_drop_params: false, should_convert_params: false },
@@ -512,6 +523,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	mcp_code_mode_binding_level: "server",
 	mcp_tool_sync_interval: 10,
 	mcp_disable_auto_tool_inject: false,
+	mcp_enable_temp_token_auth: false,
 	async_job_result_ttl: 3600,
 	allowed_headers: [],
 	required_headers: [],
@@ -523,12 +535,14 @@ export const DefaultCoreConfig: CoreConfig = {
 
 // Semantic cache configuration types
 interface BaseCacheConfig {
-	ttl_seconds: number;
+	ttl: number;
 	threshold: number;
 	conversation_history_threshold?: number;
 	exclude_system_prompt?: boolean;
 	cache_by_model: boolean;
 	cache_by_provider: boolean;
+	vector_store_namespace?: string;
+	default_cache_key?: string;
 	created_at?: string;
 	updated_at?: string;
 }
@@ -536,13 +550,11 @@ interface BaseCacheConfig {
 export interface DirectCacheConfig extends BaseCacheConfig {
 	dimension: 1;
 	provider?: undefined;
-	keys?: ModelProviderKey[];
 	embedding_model?: undefined;
 }
 
 export interface ProviderBackedCacheConfig extends BaseCacheConfig {
 	provider: ModelProviderName;
-	keys?: ModelProviderKey[];
 	embedding_model: string;
 	dimension: number;
 }
@@ -551,7 +563,6 @@ export type CacheConfig = DirectCacheConfig | ProviderBackedCacheConfig;
 
 export interface EditorCacheConfig extends BaseCacheConfig {
 	provider?: ModelProviderName;
-	keys?: ModelProviderKey[];
 	embedding_model?: string;
 	dimension?: number;
 }

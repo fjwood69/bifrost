@@ -127,13 +127,18 @@ function SheetContent({
 function SheetHeader({
 	className,
 	children,
+	headerClassName,
 	showCloseButton = true,
 	...props
-}: React.ComponentProps<"div"> & { showCloseButton?: boolean }) {
+}: React.ComponentProps<"div"> & { showCloseButton?: boolean; headerClassName?: string }) {
 	const sheetContext = useSheetContext();
 
 	return (
-		<div data-slot="sheet-header" className={cn("flex items-center", sheetContext?.expandable ? "p-0" : "mb-6")} {...props}>
+		<div
+			data-slot="sheet-header"
+			className={cn("flex items-center gap-1 w-full pr-2", sheetContext?.expandable ? "p-0" : "mb-6", headerClassName)}
+			{...props}
+		>
 			{sheetContext?.expandable && sheetContext?.side === "right" && (
 				<button
 					type="button"
@@ -149,7 +154,7 @@ function SheetHeader({
 				{children}
 			</div>
 			{showCloseButton && (
-				<SheetPrimitive.Close className="hover:bg-accent ml-1 shrink-0 cursor-pointer rounded-md p-2 opacity-70 transition-opacity hover:scale-105 hover:opacity-100">
+				<SheetPrimitive.Close className="hover:bg-accent shrink-0 cursor-pointer rounded-md p-2 opacity-70 transition-opacity hover:opacity-100">
 					<XIcon className="size-4" />
 					<span className="sr-only">Close</span>
 				</SheetPrimitive.Close>

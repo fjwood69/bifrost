@@ -591,6 +591,33 @@ func TestGovernanceStore_MultiBudget_InMemoryCreateAndDelete(t *testing.T) {
 	assert.False(t, found, "VK should not be found after delete")
 }
 
+func TestGovernanceStore_UpdateVirtualKeyInMemory_RotatedValueRemovesOldLookup(t *testing.T) {
+	logger := NewMockLogger()
+	budget := buildBudgetWithUsage("budget1", 100.0, 25.0, "1d")
+	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-old", "Test VK", budget)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	updated := *vk
+	updated.Value = "sk-bf-new"
+	store.UpdateVirtualKeyInMemory(context.Background(), &updated, nil, nil, nil)
+
+	oldVK, oldFound := store.GetVirtualKey(context.Background(), "sk-bf-old")
+	assert.False(t, oldFound)
+	assert.Nil(t, oldVK)
+
+	newVK, newFound := store.GetVirtualKey(context.Background(), "sk-bf-new")
+	require.True(t, newFound)
+	require.NotNil(t, newVK)
+	assert.Equal(t, "vk1", newVK.ID)
+	require.Len(t, newVK.Budgets, 1)
+	assert.Equal(t, 25.0, newVK.Budgets[0].CurrentUsage)
+}
+
 // TestGovernanceStore_UpdateRateLimitUsage_TokensAndRequests tests atomic rate limit usage updates
 func TestGovernanceStore_UpdateRateLimitUsage_TokensAndRequests(t *testing.T) {
 	logger := NewMockLogger()
@@ -738,7 +765,7 @@ func TestGovernanceStore_RoutingRules_CreateAndRetrieve(t *testing.T) {
 		ID:            "1",
 		Name:          "Global Rule",
 		Description:   "Test global routing rule",
-		Enabled:       true,
+		Enabled:       bifrost.Ptr(true),
 		CelExpression: "model == 'gpt-4o'",
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4"), Weight: 1.0},
@@ -758,7 +785,7 @@ func TestGovernanceStore_RoutingRules_CreateAndRetrieve(t *testing.T) {
 		ID:            "2",
 		Name:          "Team Rule",
 		Description:   "Test team routing rule",
-		Enabled:       true,
+		Enabled:       bifrost.Ptr(true),
 		CelExpression: "model in ['gpt-4o', 'gpt-4-turbo']",
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("azure"), Weight: 1.0},
@@ -806,7 +833,7 @@ func TestGovernanceStore_RoutingRules_PriorityOrdering(t *testing.T) {
 			Priority: 5,
 			Scope:    "global",
 			ScopeID:  nil,
-			Enabled:  true,
+			Enabled:  bifrost.Ptr(true),
 		},
 		{
 			ID:       "2",
@@ -814,7 +841,7 @@ func TestGovernanceStore_RoutingRules_PriorityOrdering(t *testing.T) {
 			Priority: 20,
 			Scope:    "global",
 			ScopeID:  nil,
-			Enabled:  true,
+			Enabled:  bifrost.Ptr(true),
 		},
 		{
 			ID:       "3",
@@ -822,7 +849,7 @@ func TestGovernanceStore_RoutingRules_PriorityOrdering(t *testing.T) {
 			Priority: 10,
 			Scope:    "global",
 			ScopeID:  nil,
-			Enabled:  true,
+			Enabled:  bifrost.Ptr(true),
 		},
 	}
 
@@ -848,7 +875,7 @@ func TestGovernanceStore_RoutingRules_DisabledRulesFiltered(t *testing.T) {
 	enabledRule := &configstoreTables.TableRoutingRule{
 		ID:      "1",
 		Name:    "Enabled Rule",
-		Enabled: true,
+		Enabled: bifrost.Ptr(true),
 		Scope:   "global",
 		ScopeID: nil,
 	}
@@ -856,7 +883,7 @@ func TestGovernanceStore_RoutingRules_DisabledRulesFiltered(t *testing.T) {
 	disabledRule := &configstoreTables.TableRoutingRule{
 		ID:      "2",
 		Name:    "Disabled Rule",
-		Enabled: false,
+		Enabled: bifrost.Ptr(false),
 		Scope:   "global",
 		ScopeID: nil,
 	}
@@ -881,7 +908,7 @@ func TestGovernanceStore_RoutingRules_DeleteRule(t *testing.T) {
 	rule := &configstoreTables.TableRoutingRule{
 		ID:      "1",
 		Name:    "Test Rule",
-		Enabled: true,
+		Enabled: bifrost.Ptr(true),
 		Scope:   "global",
 		ScopeID: nil,
 	}
@@ -985,13 +1012,13 @@ func TestGovernanceStore_RoutingRules_MultipleScopes(t *testing.T) {
 
 	// Create rules for different scopes
 	globalRule := &configstoreTables.TableRoutingRule{
-		ID: "1", Name: "Global", Scope: "global", ScopeID: nil, Priority: 10, Enabled: true,
+		ID: "1", Name: "Global", Scope: "global", ScopeID: nil, Priority: 10, Enabled: bifrost.Ptr(true),
 	}
 	customerRule := &configstoreTables.TableRoutingRule{
-		ID: "2", Name: "Customer", Scope: "customer", ScopeID: &customerID, Priority: 20, Enabled: true,
+		ID: "2", Name: "Customer", Scope: "customer", ScopeID: &customerID, Priority: 20, Enabled: bifrost.Ptr(true),
 	}
 	teamRule := &configstoreTables.TableRoutingRule{
-		ID: "3", Name: "Team", Scope: "team", ScopeID: &teamID, Priority: 30, Enabled: true,
+		ID: "3", Name: "Team", Scope: "team", ScopeID: &teamID, Priority: 30, Enabled: bifrost.Ptr(true),
 	}
 
 	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), globalRule))
@@ -1034,7 +1061,7 @@ func TestCompileAndCacheProgram(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai")},
 		},
-		Enabled: true,
+		Enabled: bifrost.Ptr(true),
 	}
 
 	// First compilation
@@ -1064,7 +1091,7 @@ func TestCompileAndCacheProgram_InvalidExpression(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai")},
 		},
-		Enabled: true,
+		Enabled: bifrost.Ptr(true),
 	}
 
 	_, err = store.GetRoutingProgram(context.Background(), rule)
@@ -1088,7 +1115,7 @@ func TestCompileAndCacheProgram_CacheInvalidation(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai")},
 		},
-		Enabled: true,
+		Enabled: bifrost.Ptr(true),
 		Scope:   "global",
 	}
 
@@ -1121,7 +1148,7 @@ func TestCompileAndCacheProgram_CacheInvalidationOnDelete(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai")},
 		},
-		Enabled: true,
+		Enabled: bifrost.Ptr(true),
 		Scope:   "global",
 	}
 
@@ -1149,7 +1176,7 @@ func TestCompileAndCacheProgram_EmptyExpression(t *testing.T) {
 		Targets: []configstoreTables.TableRoutingTarget{
 			{Provider: bifrost.Ptr("openai")},
 		},
-		Enabled: true,
+		Enabled: bifrost.Ptr(true),
 	}
 
 	program, err := store.GetRoutingProgram(context.Background(), rule)
